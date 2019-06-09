@@ -20,11 +20,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/netstack/sleep"
-	"github.com/google/netstack/tcpip"
-	"github.com/google/netstack/tcpip/buffer"
-	"github.com/google/netstack/tcpip/header"
-	"github.com/google/netstack/tcpip/seqnum"
+	"github.com/SebastianVoit/netstack/sleep"
+	"github.com/SebastianVoit/netstack/tcpip"
+	"github.com/SebastianVoit/netstack/tcpip/buffer"
+	"github.com/SebastianVoit/netstack/tcpip/header"
+	"github.com/SebastianVoit/netstack/tcpip/seqnum"
 )
 
 const (

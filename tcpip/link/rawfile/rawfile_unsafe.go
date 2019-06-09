@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/google/netstack/tcpip"
+	"github.com/SebastianVoit/netstack/tcpip"
 )
 
 // GetMTU determines the MTU of a network interface device.

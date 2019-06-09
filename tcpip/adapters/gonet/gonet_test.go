@@ -24,14 +24,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/netstack/tcpip"
-	"github.com/google/netstack/tcpip/link/loopback"
-	"github.com/google/netstack/tcpip/network/ipv4"
-	"github.com/google/netstack/tcpip/network/ipv6"
-	"github.com/google/netstack/tcpip/stack"
-	"github.com/google/netstack/tcpip/transport/tcp"
-	"github.com/google/netstack/tcpip/transport/udp"
-	"github.com/google/netstack/waiter"
+	"github.com/SebastianVoit/netstack/tcpip"
+	"github.com/SebastianVoit/netstack/tcpip/link/loopback"
+	"github.com/SebastianVoit/netstack/tcpip/network/ipv4"
+	"github.com/SebastianVoit/netstack/tcpip/network/ipv6"
+	"github.com/SebastianVoit/netstack/tcpip/stack"
+	"github.com/SebastianVoit/netstack/tcpip/transport/tcp"
+	"github.com/SebastianVoit/netstack/tcpip/transport/udp"
+	"github.com/SebastianVoit/netstack/waiter"
 	"golang.org/x/net/nettest"
 )
 

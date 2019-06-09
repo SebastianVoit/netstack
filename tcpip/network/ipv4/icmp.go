@@ -17,9 +17,9 @@ package ipv4
 import (
 	"encoding/binary"
 
-	"github.com/google/netstack/tcpip/buffer"
-	"github.com/google/netstack/tcpip/header"
-	"github.com/google/netstack/tcpip/stack"
+	"github.com/SebastianVoit/netstack/tcpip/buffer"
+	"github.com/SebastianVoit/netstack/tcpip/header"
+	"github.com/SebastianVoit/netstack/tcpip/stack"
 )
 
 // handleControl handles the case when an ICMP packet contains the headers of

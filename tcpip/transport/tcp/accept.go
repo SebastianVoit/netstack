@@ -22,13 +22,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/netstack/rand"
-	"github.com/google/netstack/sleep"
-	"github.com/google/netstack/tcpip"
-	"github.com/google/netstack/tcpip/header"
-	"github.com/google/netstack/tcpip/seqnum"
-	"github.com/google/netstack/tcpip/stack"
-	"github.com/google/netstack/waiter"
+	"github.com/SebastianVoit/netstack/rand"
+	"github.com/SebastianVoit/netstack/sleep"
+	"github.com/SebastianVoit/netstack/tcpip"
+	"github.com/SebastianVoit/netstack/tcpip/header"
+	"github.com/SebastianVoit/netstack/tcpip/seqnum"
+	"github.com/SebastianVoit/netstack/tcpip/stack"
+	"github.com/SebastianVoit/netstack/waiter"
 )
 
 const (

@@ -18,15 +18,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/netstack/tcpip"
-	"github.com/google/netstack/tcpip/buffer"
-	"github.com/google/netstack/tcpip/checker"
-	"github.com/google/netstack/tcpip/header"
-	"github.com/google/netstack/tcpip/network/ipv4"
-	"github.com/google/netstack/tcpip/seqnum"
-	"github.com/google/netstack/tcpip/transport/tcp"
-	"github.com/google/netstack/tcpip/transport/tcp/testing/context"
-	"github.com/google/netstack/waiter"
+	"github.com/SebastianVoit/netstack/tcpip"
+	"github.com/SebastianVoit/netstack/tcpip/buffer"
+	"github.com/SebastianVoit/netstack/tcpip/checker"
+	"github.com/SebastianVoit/netstack/tcpip/header"
+	"github.com/SebastianVoit/netstack/tcpip/network/ipv4"
+	"github.com/SebastianVoit/netstack/tcpip/seqnum"
+	"github.com/SebastianVoit/netstack/tcpip/transport/tcp"
+	"github.com/SebastianVoit/netstack/tcpip/transport/tcp/testing/context"
+	"github.com/SebastianVoit/netstack/waiter"
 )
 
 func TestV4MappedConnectOnV6Only(t *testing.T) {

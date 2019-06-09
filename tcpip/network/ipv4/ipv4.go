@@ -23,12 +23,12 @@ package ipv4
 import (
 	"sync/atomic"
 
-	"github.com/google/netstack/tcpip"
-	"github.com/google/netstack/tcpip/buffer"
-	"github.com/google/netstack/tcpip/header"
-	"github.com/google/netstack/tcpip/network/fragmentation"
-	"github.com/google/netstack/tcpip/network/hash"
-	"github.com/google/netstack/tcpip/stack"
+	"github.com/SebastianVoit/netstack/tcpip"
+	"github.com/SebastianVoit/netstack/tcpip/buffer"
+	"github.com/SebastianVoit/netstack/tcpip/header"
+	"github.com/SebastianVoit/netstack/tcpip/network/fragmentation"
+	"github.com/SebastianVoit/netstack/tcpip/network/hash"
+	"github.com/SebastianVoit/netstack/tcpip/stack"
 )
 
 const (

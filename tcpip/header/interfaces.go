@@ -15,7 +15,7 @@
 package header
 
 import (
-	"github.com/google/netstack/tcpip"
+	"github.com/SebastianVoit/netstack/tcpip"
 )
 
 const (

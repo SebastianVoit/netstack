@@ -18,7 +18,7 @@ import (
 	"math"
 	"syscall"
 
-	"github.com/google/netstack/tcpip/link/sharedmem/queue"
+	"github.com/SebastianVoit/netstack/tcpip/link/sharedmem/queue"
 )
 
 const (
