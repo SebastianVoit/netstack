@@ -10,9 +10,6 @@ import (
 // BufConfig defines the shape of the vectorised view used to read packets from the NIC.
 var BufConfig = []int{128, 256, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
 
-// BatchSize defines the size of the rxBatches for the ixy device. 256 performs best
-var BatchSize = 256
-
 // rxBatchDispatcher uses driver.RxBatch() to read inbound packets and dispatches them
 type rxBatchDispatcher struct {
 	// rxQueue is the receive queue that is used to receive packets.
@@ -28,12 +25,6 @@ type rxBatchDispatcher struct {
 	// Receiveing in small batches is slow
 	// -> we receive once and dispatch packet by packet
 	pktBufs []*driver.PktBuf
-
-	// keeps track of how many packets are in our buffer
-	//rec uint32
-
-	// keeps track of how many packets from the buffer are done
-	//done uint32
 }
 
 func newRxBatchDispatcher(rxQueue uint16, e *endpoint) (linkDispatcher, error) {
@@ -58,37 +49,54 @@ func (d *rxBatchDispatcher) capViews(k, n int, buffers []int) int {
 	return len(buffers)
 }
 
-func (d *rxBatchDispatcher) allocateViews(bufConfig []int) {
-	for k := 0; k < len(d.views); k++ {
-		// implement GSO here should we support it in the future.
-		for i := 0; i < len(bufConfig); i++ {
-			if d.views[k][i] != nil {
-				break
-			}
-			b := buffer.NewView(bufConfig[i])
-			d.views[k][i] = b
+func (d *rxBatchDispatcher) freePktBufs(rec int) {
+	// free all PktBufs and delete all references (slices) to them
+	for i := 0; i < rec; i++ {
+		driver.PktBufFree(d.pktBufs[i])
+		d.pktBufs[i] = nil
+	}
+	for i := 0; i < len(d.views); i++ {
+		for j := 0; j < len(d.views[i]); j++ {
+			d.views[i][j] = nil
 		}
 	}
 }
 
-func (d *rxBatchDispatcher) freePktBufs() {
-	for i := 0; i < BatchSize; i++ {
-		driver.PktBufFree(d.pktBufs[i])
+// initViews builds a buffer.View structure ontop of the currently allocate PktBufs
+// ignores all pktBufs that are not filled
+func (d *rxBatchDispatcher) initViews(bufConfig []int) {
+	for k := 0; k < len(d.views) && d.pktBufs[k] != nil; k++ {
+		// implement GSO here should we support it in the future.
+		at := 0
+		for i := 0; i < len(bufConfig); i++ {
+			if d.views[k][i] != nil {
+				break
+			}
+			overfull := at + BufConfig[i] - int(d.pktBufs[k].Size)
+			var b buffer.View
+			if overfull > 0 {
+				// -> all following views will be [] and later capped
+				b = buffer.View(d.pktBufs[k].Pkt[at:d.pktBufs[k].Size])
+			} else {
+				b = buffer.View(d.pktBufs[k].Pkt[at : at+BufConfig[i]])
+			}
+			at += len(b)
+			d.views[k][i] = b
+		}
 	}
 }
 
 // rxBatchDispatcher reads up to BatchSize packets at a time from the
 // ixy device and dispatches it.
 func (d *rxBatchDispatcher) dispatch() (bool, *tcpip.Error) {
-	d.allocateViews(BufConfig)
-
+	// read packets and put them into the views
 	nMsgs, err := d.ixyBlockingRead(d.rxQueue, d.pktBufs)
-	// free all PktBufs when leaving this function
-	defer d.freePktBufs()
+	defer d.freePktBufs(nMsgs)
 	if err != nil {
 		return false, err
 	}
-
+	// PktBufs and views are cleaned when all the packets are processed (or this function unexpectedly stops)
+	d.initViews(BufConfig)
 	// Process each of received packets.
 	for k := 0; k < nMsgs; k++ {
 		n := int(d.pktBufs[k].Size)
@@ -100,9 +108,6 @@ func (d *rxBatchDispatcher) dispatch() (bool, *tcpip.Error) {
 			p             tcpip.NetworkProtocolNumber
 			remote, local tcpip.LinkAddress
 		)
-		// tbh I really don't get how the packet is supposed to get into the views
-		// get packet into the views and we're good I think?
-		// for now assume it magically works and fix if it doesn't
 		if d.e.hdrSize > 0 {
 			eth := header.Ethernet(d.views[k][0])
 			p = eth.Type()
@@ -117,7 +122,6 @@ func (d *rxBatchDispatcher) dispatch() (bool, *tcpip.Error) {
 			case header.IPv6Version:
 				p = header.IPv6ProtocolNumber
 			default:
-				// this makes the func ignore the rest of the packets but I doubt that this is relevant
 				return true, nil
 			}
 		}
@@ -126,11 +130,6 @@ func (d *rxBatchDispatcher) dispatch() (bool, *tcpip.Error) {
 		vv := buffer.NewVectorisedView(int(n), d.views[k][:used])
 		vv.TrimFront(d.e.hdrSize)
 		d.e.dispatcher.DeliverNetworkPacket(d.e, remote, local, p, vv)
-
-		// Prepare e.views for another packet: release used views.
-		for i := 0; i < used; i++ {
-			d.views[k][i] = nil
-		}
 	}
 
 	return true, nil

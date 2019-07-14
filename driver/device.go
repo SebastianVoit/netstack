@@ -16,7 +16,7 @@ type IxyInterface interface {
 	ReadStats(*DeviceStats)
 	setPromisc(bool)
 	getLinkSpeed() uint32
-	getIxyDev() IxyDevice
+	GetIxyDev() IxyDevice
 }
 
 //IxyDevice contains information common across all substrates

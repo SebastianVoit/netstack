@@ -7,13 +7,13 @@ import (
 
 //DeviceStats holds stats
 type DeviceStats struct {
-	device IxyInterface
+	device                                 IxyInterface
 	rxPackets, txPackets, rxBytes, txBytes uint64
 }
 
 //PrintStats prints stats
 func (stats *DeviceStats) PrintStats() {
-	dev := stats.device.getIxyDev()
+	dev := stats.device.GetIxyDev()
 	var addr string
 	if stats.device != nil {
 		addr = dev.PciAddr
@@ -36,8 +36,8 @@ func diffMbit(bytesNew, bytesOld, pktsNew, pktsOld uint64, nanos time.Duration) 
 
 //PrintStatsDiff get difference between reciever and previous stats
 func (stats *DeviceStats) PrintStatsDiff(statsOld *DeviceStats, nanos time.Duration) {
-	oldDev := statsOld.device.getIxyDev()
-	newDev := stats.device.getIxyDev()
+	oldDev := statsOld.device.GetIxyDev()
+	newDev := stats.device.GetIxyDev()
 	var addr string
 	if statsOld.device != nil {
 		addr = oldDev.PciAddr

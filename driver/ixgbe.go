@@ -44,7 +44,7 @@ type ixgbeTxQueue struct {
 	virtualAddresses []*PktBuf
 }
 
-func (dev *ixgbeDevice) getIxyDev() IxyDevice {
+func (dev *ixgbeDevice) GetIxyDev() IxyDevice {
 	return dev.ixy
 }
 

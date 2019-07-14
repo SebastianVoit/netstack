@@ -10,12 +10,21 @@ package ixygo
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/SebastianVoit/netstack/driver"
 	"github.com/SebastianVoit/netstack/tcpip"
 	"github.com/SebastianVoit/netstack/tcpip/buffer"
 	"github.com/SebastianVoit/netstack/tcpip/header"
 	"github.com/SebastianVoit/netstack/tcpip/stack"
+)
+
+const (
+	// BatchSize defines the size of the rxBatches for the ixy device. 256 performs best
+	BatchSize = 256
+	// t defines the amount of milliseconds after which the enqueued packets will be sent even if BatchSize hasn't been reached yet -> Magic Number
+	// DPDK supposedly uses 100 Microseconds, have to confirm
+	tw = 100 * time.Microsecond
 )
 
 // linkDispatcher reads packets from the link FD and dispatches them to the
@@ -31,10 +40,16 @@ type linkDispatcher interface {
  * Also PacketBuffer: we need to free the PktBuf of received packets at some point. Also copy?
  */
 
-type mxMempool struct {
+type txMempool struct {
 	mu      sync.Mutex
 	inUse   uint32
 	mempool *(driver.Mempool)
+}
+
+type txb struct {
+	bufs   []*driver.PktBuf
+	filled int
+	timer  *time.Timer
 }
 
 // endpoint infos
@@ -46,16 +61,19 @@ type endpoint struct {
 	txQueues uint16
 
 	// pointer to the TX mempools with an aded lock, used for packet allocation etc.
-	txMempools []*mxMempool
+	txMempools []*txMempool
 
-	// for now we just rotate through the queues for sending
-	nxtTxQueue uint16
+	// save packets until we accumulated enough
+	txBufs []*txb
 
 	// number of entries in the TX mempools
-	txBufs uint32
+	txEntries uint32
 
 	// the driver
 	dev driver.IxyInterface
+
+	// size of the ixy PktBufs. Default is 0 -> 2048 byte PktBufs
+	entrySize uint32
 
 	// mtu (maximum transmission unit) is the maximum size of a packet.
 	mtu uint32
@@ -89,19 +107,15 @@ type endpoint struct {
 	//gsoMaxSize uint32
 }
 
+// Most likely only allocate one endpoint/queue -> don't configure the number of queues but what queue we use (solves route <-> queue matching)
+
 // Options to configure ixy device
 type Options struct {
-	// PCI Addrs of the NIC
-	PciAddr string
+	// ixy.go device
+	Dev driver.IxyInterface
 
-	// Number of RX queues
-	RxQueues uint16
-
-	// Number of TX queues
-	TxQueues uint16
-
-	//Number of buffers per TC queue
-	TxBufs uint32
+	// Number of buffers per TX queue
+	TxEntries uint32
 
 	// Allow NIC stats?
 	//Stats bool
@@ -149,12 +163,15 @@ type Options struct {
 // New creates a new ixy.go based endpoint
 // CreateNIC(id, LinkID) creates exactly one NIC with ixy as its LinkEndpoint (LinkID returned from New)
 func New(opts *Options) (tcpip.LinkEndpointID, error) {
-	// create new ixy device
-	dev := driver.IxyInit(opts.PciAddr, opts.RxQueues, opts.TxQueues)
+	// no ixy device no endpoint
+	if opts.Dev == nil {
+		return 0, fmt.Errorf("opts.Dev is empty. Please provide an initialized ixy.go driver")
+	}
+	devStats := opts.Dev.GetIxyDev()
 
 	/* stats should we need them:
 	stats := driver.DeviceStats{}
-	stats.StatsInit(dev)
+	stats.StatsInit(opts.Dev)
 	*/
 
 	caps := stack.LinkEndpointCapabilities(0)
@@ -177,17 +194,31 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 
 	// finish configuring and then create a new endpoint struct
 
+	tbufs := make([]*txb, devStats.NumTxQueues)
+	for i := 0; i < len(tbufs); i++ {
+		tbufs[i] = &txb{
+			bufs:  make([]*driver.PktBuf, BatchSize),
+			timer: time.NewTimer(0), // can't find anything on how to initialize an empty timer -> start with time 0 and stop immediately
+		}
+		tbufs[i].timer.Stop()
+		<-tbufs[i].timer.C
+	}
 	e := &endpoint{
-		rxQueues:   opts.RxQueues,
-		txQueues:   opts.TxQueues,
-		txBufs:     opts.TxBufs,
-		txMempools: make([]*mxMempool, opts.TxQueues),
-		dev:        dev,
+		rxQueues:   devStats.NumRxQueues,
+		txQueues:   devStats.NumTxQueues,
+		txEntries:  opts.TxEntries,
+		txBufs:     tbufs,
+		txMempools: make([]*txMempool, devStats.NumTxQueues),
+		dev:        opts.Dev,
 		mtu:        opts.MTU,
 		caps:       caps,
 		closed:     opts.ClosedFunc,
 		addr:       opts.Address,
 		hdrSize:    hdrSize,
+	}
+	// if the number of txBuffers is not specified, use 2048
+	if e.txEntries == 0 {
+		e.txEntries = 2048
 	}
 
 	for i := uint16(0); i < e.rxQueues; i++ {
@@ -199,7 +230,7 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 	}
 
 	for i := uint16(0); i < e.txQueues; i++ {
-		e.txMempools[i].mempool = driver.MemoryAllocateMempool(e.txBufs, 0)
+		e.txMempools[i].mempool = driver.MemoryAllocateMempool(e.txEntries, e.entrySize)
 	}
 
 	return stack.RegisterLinkEndpoint(e), nil
@@ -286,28 +317,23 @@ func (e *endpoint) WriteRawPacket(dest tcpip.Address, packet []byte) *tcpip.Erro
 
 // if a route is given, this method does not check for dest
 func (e *endpoint) getQueueID(r *stack.Route, dest tcpip.Address) uint16 {
-	// TODO: goroutines <-> queueID
-	ret := e.nxtTxQueue
-	e.nxtTxQueue++
-	for e.nxtTxQueue >= e.txQueues {
-		e.nxtTxQueue -= e.txQueues
-	}
-	return ret
+	// TODO: goroutines <-> queueID, for now everything uses queue 0
+	return 0
 }
 
 func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	// Naive, would be better to group packets into a bigger []*(driver.PktBuf) but I don't think we can
 	// buffer array for RxBatch
-	bufs := make([]*(driver.PktBuf), 1)
+
 	// lock mempool mutex (mempools are not thread safe)
 	e.txMempools[queueID].mu.Lock()
 	defer e.txMempools[queueID].mu.Unlock()
 	// allocate a single packet
-	pbuf := driver.PktBufAlloc(e.txMempools[queueID].mempool)
+	pbuf := driver.PktBufAlloc(e.txMempools[queueID].mempool) // -> trying to send a packet on a queue that doesn't exist fails here
 	if pbuf == nil {
 		return tcpip.ErrNoBufferSpace
 	}
-	// copy the packet into the mempool
+	// copy the packet into the mempool. If the packet is longer then Pkt.Size, the rest is dropped
 	at := copy(pbuf.Pkt, b1)
 	if len(b2) != 0 {
 		at += copy(pbuf.Pkt[at:], b2)
@@ -316,16 +342,48 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 		}
 	}
 	// add packet to the sending slice
-	bufs[0] = pbuf
+	tb := e.txBufs[queueID]
+	tb.bufs[tb.filled] = pbuf
+	tb.filled++
+	if tb.filled == len(tb.bufs) {
+		// stop timer and drain channel
+		if !tb.timer.Stop() {
+			<-tb.timer.C
+		}
+		e.txMempools[queueID].mu.Lock()
+	}
+	// check if timer can be stopped. Yes -> start new one. No -> reset and enqueue
+	if !tb.timer.Stop() {
+		// Timer already expired -> goroutine has been called and we need a new timer
+		<-tb.timer.C
+		tb.timer = time.AfterFunc(tw, func() {
+			// acquire lock and send. Should this happen while the last packet is enqueued filled is resetted to 0 afterwards and sendTx() does nothing
+			e.txMempools[queueID].mu.Lock()
+			defer e.txMempools[queueID].mu.Unlock()
+			// may implement error handling in the future but since TxBatch doesn't return errors that's kinda pointless
+			e.sendTx(queueID)
+		})
+	} else {
+		tb.timer.Reset(tw)
+	}
+	return nil
+}
 
+// never call this without previously aquiring the corresponding mutex and releasing it afterwards
+func (e *endpoint) sendTx(queueID uint16) *tcpip.Error {
 	// enqueue packet(s)
-	numTx := e.dev.TxBatch(queueID, bufs)
+	tb := e.txBufs[queueID]
+	if tb.filled == 0 {
+		return nil
+	}
+	numTx := e.dev.TxBatch(queueID, tb.bufs)
 	// drop packets that couldn't fit
-	if numTx < uint32(len(bufs)) {
-		for i := numTx; i < uint32(len(bufs)); i++ {
-			driver.PktBufFree(bufs[i])
+	if numTx < uint32(tb.filled) {
+		for i := numTx; i < uint32(tb.filled); i++ {
+			driver.PktBufFree(tb.bufs[i])
 		}
 	}
+	tb.filled = 0
 	return nil
 }
 
