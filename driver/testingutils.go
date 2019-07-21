@@ -4,10 +4,12 @@ package driver
 type IxyDummy struct {
 	Ixy IxyDevice
 	// RX
-	PktData [][]byte
-	RxMpool *Mempool
+	PktData  [][]byte
+	RxMpool  *Mempool
+	RxClosed []bool
 	// TX
-	Rec [][]byte
+	Rec      [][]byte
+	TxClosed []bool
 }
 
 // RxBatch is a dummy implementation for testing purposes
@@ -39,6 +41,26 @@ func (d IxyDummy) TxBatch(_ uint16, pb []*PktBuf) uint32 {
 	}
 	d.Rec = rec
 	return uint32(len(pb))
+}
+
+// CloseRxQueue closes rx queue of the dummy
+func (d *IxyDummy) CloseRxQueue(queueID uint16) {
+	d.RxClosed[queueID] = true
+}
+
+// ClosedRx returns whether the rx queue is closed
+func (d *IxyDummy) ClosedRx(queueID uint16) bool {
+	return d.RxClosed[queueID]
+}
+
+// CloseTxQueue closes tx queue of the dummy
+func (d *IxyDummy) CloseTxQueue(queueID uint16) {
+	d.TxClosed[queueID] = true
+}
+
+// ClosedTx returns whether the tx queue is closed
+func (d *IxyDummy) ClosedTx(queueID uint16) bool {
+	return d.TxClosed[queueID]
 }
 
 // ReadStats is a dummy implementation for testing purposes

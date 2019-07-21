@@ -103,6 +103,7 @@ var (
 	ErrNoBufferSpace         = &Error{msg: "no buffer space available"}
 	ErrBroadcastDisabled     = &Error{msg: "broadcast socket option disabled"}
 	ErrNotPermitted          = &Error{msg: "operation not permitted"}
+	ErrClosedQueue           = &Error{msg: "queue already closed"}
 )
 
 // Errors related to Subnet

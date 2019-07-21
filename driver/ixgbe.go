@@ -48,14 +48,26 @@ func (dev *ixgbeDevice) GetIxyDev() IxyDevice {
 	return dev.ixy
 }
 
-/*
-func (dev *ixgbeDevice) GetMemRx(rxQueue uint16) (*Mempool, error) {
-	if rxQueue >= uint16(len(dev.rxQueues)) {
-		return nil, &IxyError{msg: "RxQueue does not exist"}
-	}
-	return dev.rxQueues[rxQueue].mempool, nil
+// for a real implementation: clean up the mempools etc and don't do any more rx/tx
+// CloseRxQueue dummy implementation
+func (dev *ixgbeDevice) CloseRxQueue(queueID uint16) {
+	return
 }
-*/
+
+// ClosedRx dummy implementation
+func (dev *ixgbeDevice) ClosedRx(queueID uint16) bool {
+	return false
+}
+
+// CloseTxQueue dummy implementation
+func (dev *ixgbeDevice) CloseTxQueue(queueID uint16) {
+	return
+}
+
+// ClosedTx dummy implementation
+func (dev *ixgbeDevice) ClosedTx(queueID uint16) bool {
+	return false
+}
 
 //see section 4.6.4
 func (dev *ixgbeDevice) initLink() {

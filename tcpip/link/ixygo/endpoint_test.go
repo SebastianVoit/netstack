@@ -82,14 +82,21 @@ func newContext(t *testing.T, opt *Options) *context {
 	return c
 }
 
+// revise: extend driver with Closed(queueID uint16) func that returns true or false -> can close queues
 func (c *context) cleanup() {
+	// close the dummy so the channel will be filled
+	for i := uint16(0); i < c.dev.GetIxyDev().NumRxQueues; i++ {
+		c.dev.CloseRxQueue(i)
+	}
 	<-c.done
-	// would be the place to kill the driver but the diver has no shutdown except for programm termination
+	for i := uint16(0); i < c.dev.GetIxyDev().NumTxQueues; i++ {
+		c.dev.CloseTxQueue(i)
+	}
 }
 
-func initDriver() driver.IxyInterface {
+/*func initDriver() driver.IxyInterface {
 	return driver.IxyInit(pci, rxqs, txqs)
-}
+}*/
 
 func initDummy(rxBufs uint32, rxQueues, txQueues uint16) *driver.IxyDummy {
 	// allocate BatchSize entries, we don't need more for testing
@@ -100,9 +107,11 @@ func initDummy(rxBufs uint32, rxQueues, txQueues uint16) *driver.IxyDummy {
 		mp = nil
 	}
 	dummy := &driver.IxyDummy{
-		Ixy:     driver.IxyDevice{DriverName: "dummy", NumRxQueues: rxQueues, NumTxQueues: txQueues},
-		PktData: nil,
-		RxMpool: mp,
+		Ixy:      driver.IxyDevice{DriverName: "dummy", NumRxQueues: rxQueues, NumTxQueues: txQueues},
+		PktData:  nil,
+		RxMpool:  mp,
+		RxClosed: make([]bool, rxQueues),
+		TxClosed: make([]bool, txQueues),
 	}
 	return dummy
 }
@@ -113,7 +122,8 @@ func (c *context) DeliverNetworkPacket(linkEP stack.LinkEndpoint, remote tcpip.L
 
 // be careful from here on: drivers cannot be cleaned up except by program termination
 // due to this fact be careful from here on, especially when using muliple contexts in one test
-// also I do not know whether the driver continues to exist after one test finishes -> probably rather not run all at once
+
+// Tests fail currently: multiple cleanups on the same context -> why?
 
 func TestNoEthernetProperties(t *testing.T) {
 	c := newContext(t, &Options{MTU: mtu, Dev: initDummy(0, 0, 0)})
@@ -126,6 +136,8 @@ func TestNoEthernetProperties(t *testing.T) {
 	if want, v := uint32(mtu), c.ep.MTU(); want != v {
 		t.Fatalf("MTU() = %v, want %v", v, want)
 	}
+	// remove later
+	fmt.Println("Success: TestNoEthernetProperties")
 }
 
 func TestEthernetProperties(t *testing.T) {
@@ -139,6 +151,7 @@ func TestEthernetProperties(t *testing.T) {
 	if want, v := uint32(mtu), c.ep.MTU(); want != v {
 		t.Fatalf("MTU() = %v, want %v", v, want)
 	}
+	fmt.Println("Success: TestEthernetProperties")
 }
 
 func TestAddress(t *testing.T) {
@@ -153,6 +166,8 @@ func TestAddress(t *testing.T) {
 			}
 		})
 	}
+	// remove later
+	fmt.Println("Success: TestAddress")
 }
 
 // currently this does not accumulate packets and only sends one packet per TxBatch -> good enough since the dummy doesn't have an overhead
@@ -232,6 +247,8 @@ func TestWritePacket(t *testing.T) {
 			}
 		}
 	}
+	// remove later
+	fmt.Println("Success: TestWritePacket")
 }
 
 func TestPreserveSrcAddress(t *testing.T) {
@@ -266,6 +283,8 @@ func TestPreserveSrcAddress(t *testing.T) {
 	if a := h.SourceAddress(); a != baddr {
 		t.Fatalf("SourceAddress() = %v, want %v", a, baddr)
 	}
+	// remove later
+	fmt.Println("Success: TestPreserveSrcAddress")
 }
 
 // Test RxBatch
@@ -331,6 +350,8 @@ func TestDeliverPacket(t *testing.T) {
 			})
 		}
 	}
+	// remove later
+	fmt.Println("Success: TestDeliverPacket")
 }
 
 func TestBufConfigFirst(t *testing.T) {
@@ -342,4 +363,6 @@ func TestBufConfigFirst(t *testing.T) {
 	if got < want {
 		t.Errorf("first view has an invalid size: got %d, want >= %d", got, want)
 	}
+	// remove later
+	fmt.Println("Success: TestBufConfigFirst")
 }

@@ -17,6 +17,10 @@ type IxyInterface interface {
 	setPromisc(bool)
 	getLinkSpeed() uint32
 	GetIxyDev() IxyDevice
+	CloseRxQueue(uint16)
+	ClosedRx(uint16) bool
+	CloseTxQueue(uint16)
+	ClosedTx(uint16) bool
 }
 
 //IxyDevice contains information common across all substrates

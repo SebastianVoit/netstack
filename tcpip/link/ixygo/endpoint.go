@@ -60,7 +60,7 @@ type endpoint struct {
 	// denotes the number of tx queues configured on the driver
 	txQueues uint16
 
-	// pointer to the TX mempools with an aded lock, used for packet allocation etc.
+	// pointer to the TX mempools with an added lock, used for packet allocation etc.
 	txMempools []*txMempool
 
 	// save packets until we accumulated enough
@@ -324,6 +324,10 @@ func (e *endpoint) getQueueID(r *stack.Route, dest tcpip.Address) uint16 {
 func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	// Naive, would be better to group packets into a bigger []*(driver.PktBuf) but I don't think we can
 	// buffer array for RxBatch
+
+	if e.dev.ClosedTx(queueID) {
+		return tcpip.ErrClosedQueue
+	}
 
 	// lock mempool mutex (mempools are not thread safe)
 	e.txMempools[queueID].mu.Lock()
