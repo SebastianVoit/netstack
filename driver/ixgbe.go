@@ -48,27 +48,6 @@ func (dev *ixgbeDevice) GetIxyDev() IxyDevice {
 	return dev.ixy
 }
 
-// for a real implementation: clean up the mempools etc and don't do any more rx/tx
-// CloseRxQueue dummy implementation
-func (dev *ixgbeDevice) CloseRxQueue(queueID uint16) {
-	return
-}
-
-// ClosedRx dummy implementation
-func (dev *ixgbeDevice) ClosedRx(queueID uint16) bool {
-	return false
-}
-
-// CloseTxQueue dummy implementation
-func (dev *ixgbeDevice) CloseTxQueue(queueID uint16) {
-	return
-}
-
-// ClosedTx dummy implementation
-func (dev *ixgbeDevice) ClosedTx(queueID uint16) bool {
-	return false
-}
-
 //see section 4.6.4
 func (dev *ixgbeDevice) initLink() {
 	//should already be set by the eeprom config, maybe we shouldn't override it here to support weirdo nics?
@@ -400,7 +379,8 @@ func wrapRing(index, ringSize uint16) uint16 {
 //try to receive a single packet if one is available, non-blocking
 //see datasheet section 7.1.9 for an explanation of the rx ring structure
 //tl;dr: we control the tail of the queue, the hardware the head
-func (dev *ixgbeDevice) RxBatch(queueID uint16, bufs []*PktBuf) uint32 {
+// err != nil -> no packets have been sent (not <- though!)
+func (dev *ixgbeDevice) RxBatch(queueID uint16, bufs []*PktBuf) (uint32, error) {
 	numBufs := uint32(len(bufs))
 	queue := &dev.rxQueues[queueID]
 	rxIndex := queue.rxIndex
@@ -464,14 +444,15 @@ func (dev *ixgbeDevice) RxBatch(queueID uint16, bufs []*PktBuf) uint32 {
 		setReg32(dev.addr, IXGBE_RDT(int(queueID)), uint32(lastRxIndex))
 		queue.rxIndex = rxIndex
 	}
-	return bufIndex //number of packets stored in bufs; bufIndex "points" to the next index
+	return bufIndex, nil //number of packets stored in bufs; bufIndex "points" to the next index
 }
 
 //section 1.8.1 and 7.2
 //we control the tail, hardware the head
 //huge performance gains possible here by sending packets in batches - writing to TDT for every packet is not efficient
 //returns the number of packets transmitted, will not block when the queue is full
-func (dev *ixgbeDevice) TxBatch(queueID uint16, bufs []*PktBuf) uint32 {
+// err != nil -> no packets have been sent (not <- though!)
+func (dev *ixgbeDevice) TxBatch(queueID uint16, bufs []*PktBuf) (uint32, error) {
 	numBufs := uint32(len(bufs))
 	queue := &dev.txQueues[queueID]
 	//the descriptor is explained in section 7.2.3.2.4
@@ -566,5 +547,5 @@ func (dev *ixgbeDevice) TxBatch(queueID uint16, bufs []*PktBuf) uint32 {
 	//send out by advancing tail, i.e., pass control of the bufs to the nic
 	//this seems like a textbook case for a release memory order, but Intel's driver doesn't even use a compiler barrier here
 	setReg32(dev.addr, IXGBE_TDT(int(queueID)), uint32(queue.txIndex))
-	return sent
+	return sent, nil
 }

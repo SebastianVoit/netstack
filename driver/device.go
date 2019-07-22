@@ -11,16 +11,12 @@ var isBig = true
 
 //IxyInterface is the interface that has to be implemented for all substrates such as the ixgbe or virtio
 type IxyInterface interface {
-	RxBatch(uint16, []*PktBuf) uint32
-	TxBatch(uint16, []*PktBuf) uint32
+	RxBatch(uint16, []*PktBuf) (uint32, error)
+	TxBatch(uint16, []*PktBuf) (uint32, error)
 	ReadStats(*DeviceStats)
 	setPromisc(bool)
 	getLinkSpeed() uint32
 	GetIxyDev() IxyDevice
-	CloseRxQueue(uint16)
-	ClosedRx(uint16) bool
-	CloseTxQueue(uint16)
-	ClosedTx(uint16) bool
 }
 
 //IxyDevice contains information common across all substrates
@@ -68,6 +64,11 @@ func IxyInit(pciAddr string, rxQueues, txQueues uint16) IxyInterface {
 //IxyTxBatchBusyWait calls dev.TxBatch until all packets are queued with busy waiting
 func IxyTxBatchBusyWait(dev IxyInterface, queueID uint16, bufs []*PktBuf) {
 	numBufs := uint32(len(bufs))
-	for numSent := uint32(0); numSent != numBufs; numSent += dev.TxBatch(queueID, bufs[numSent:]) {
+	for numSent := uint32(0); numSent != numBufs; {
+		numTx, err := dev.TxBatch(queueID, bufs[numSent:])
+		numSent += numTx
+		if err != nil {
+			break
+		}
 	} //busy wait
 }

@@ -325,10 +325,6 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	// Naive, would be better to group packets into a bigger []*(driver.PktBuf) but I don't think we can
 	// buffer array for RxBatch
 
-	if e.dev.ClosedTx(queueID) {
-		return tcpip.ErrClosedQueue
-	}
-
 	// lock mempool mutex (mempools are not thread safe)
 	e.txMempools[queueID].mu.Lock()
 	defer e.txMempools[queueID].mu.Unlock()
@@ -380,14 +376,17 @@ func (e *endpoint) sendTx(queueID uint16) *tcpip.Error {
 	if tb.filled == 0 {
 		return nil
 	}
-	numTx := e.dev.TxBatch(queueID, tb.bufs)
-	// drop packets that couldn't fit
+	numTx, err := e.dev.TxBatch(queueID, tb.bufs)
+	// drop packets that didn't get sent first, then handle error
 	if numTx < uint32(tb.filled) {
 		for i := numTx; i < uint32(tb.filled); i++ {
 			driver.PktBufFree(tb.bufs[i])
 		}
 	}
 	tb.filled = 0
+	if err != nil {
+		return tcpip.ErrClosedQueue
+	}
 	return nil
 }
 

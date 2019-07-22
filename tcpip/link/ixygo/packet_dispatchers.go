@@ -139,12 +139,13 @@ func (d *rxBatchDispatcher) dispatch() (bool, *tcpip.Error) {
 // blocks until packets are read
 // use this with a reasonable bufs size, e.g. 1<<5 or larger (1<<8 performs best)
 func (d *rxBatchDispatcher) ixyBlockingRead(queueID uint16, bufs []*driver.PktBuf) (int, *tcpip.Error) {
-	if d.e.dev.ClosedRx(queueID) {
-		return 0, tcpip.ErrClosedQueue
-	}
 	read := 0
 	for read == 0 {
-		read = int(d.e.dev.RxBatch(queueID, bufs))
+		rec, err := d.e.dev.RxBatch(queueID, bufs)
+		read += int(rec)
+		if err != nil {
+			return read, tcpip.ErrClosedQueue
+		}
 	}
 	return read, nil
 }

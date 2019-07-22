@@ -83,14 +83,14 @@ func newContext(t *testing.T, opt *Options) *context {
 }
 
 // revise: extend driver with Closed(queueID uint16) func that returns true or false -> can close queues
-func (c *context) cleanup() {
+func (c *context) cleanup(d *driver.IxyDummy) {
 	// close the dummy so the channel will be filled
 	for i := uint16(0); i < c.dev.GetIxyDev().NumRxQueues; i++ {
-		c.dev.CloseRxQueue(i)
+		d.RxClosed[i] = true
 	}
 	<-c.done
 	for i := uint16(0); i < c.dev.GetIxyDev().NumTxQueues; i++ {
-		c.dev.CloseTxQueue(i)
+		d.TxClosed[i] = true
 	}
 }
 
@@ -126,8 +126,9 @@ func (c *context) DeliverNetworkPacket(linkEP stack.LinkEndpoint, remote tcpip.L
 // Tests fail currently: multiple cleanups on the same context -> why?
 
 func TestNoEthernetProperties(t *testing.T) {
-	c := newContext(t, &Options{MTU: mtu, Dev: initDummy(0, 0, 0)})
-	defer c.cleanup()
+	dummy := initDummy(0, 0, 0)
+	c := newContext(t, &Options{MTU: mtu, Dev: dummy})
+	defer c.cleanup(dummy)
 
 	if want, v := uint16(0), c.ep.MaxHeaderLength(); want != v {
 		t.Fatalf("MaxHeaderLength() = %v, want %v", v, want)
@@ -136,13 +137,12 @@ func TestNoEthernetProperties(t *testing.T) {
 	if want, v := uint32(mtu), c.ep.MTU(); want != v {
 		t.Fatalf("MTU() = %v, want %v", v, want)
 	}
-	// remove later
-	fmt.Println("Success: TestNoEthernetProperties")
 }
 
 func TestEthernetProperties(t *testing.T) {
-	c := newContext(t, &Options{EthernetHeader: true, MTU: mtu, Dev: initDummy(0, 0, 0)})
-	defer c.cleanup()
+	dummy := initDummy(0, 0, 0)
+	c := newContext(t, &Options{EthernetHeader: true, MTU: mtu, Dev: dummy})
+	defer c.cleanup(dummy)
 
 	if want, v := uint16(header.EthernetMinimumSize), c.ep.MaxHeaderLength(); want != v {
 		t.Fatalf("MaxHeaderLength() = %v, want %v", v, want)
@@ -151,23 +151,21 @@ func TestEthernetProperties(t *testing.T) {
 	if want, v := uint32(mtu), c.ep.MTU(); want != v {
 		t.Fatalf("MTU() = %v, want %v", v, want)
 	}
-	fmt.Println("Success: TestEthernetProperties")
 }
 
 func TestAddress(t *testing.T) {
 	addrs := []tcpip.LinkAddress{"", "abc", "def"}
 	for _, a := range addrs {
 		t.Run(fmt.Sprintf("Address: %q", a), func(t *testing.T) {
-			c := newContext(t, &Options{Address: a, MTU: mtu, Dev: initDummy(0, 0, 0)})
-			defer c.cleanup()
+			dummy := initDummy(0, 0, 0)
+			c := newContext(t, &Options{Address: a, MTU: mtu, Dev: dummy})
+			defer c.cleanup(dummy)
 
 			if want, v := a, c.ep.LinkAddress(); want != v {
 				t.Fatalf("LinkAddress() = %v, want %v", v, want)
 			}
 		})
 	}
-	// remove later
-	fmt.Println("Success: TestAddress")
 }
 
 // currently this does not accumulate packets and only sends one packet per TxBatch -> good enough since the dummy doesn't have an overhead
@@ -175,7 +173,7 @@ func testWritePacket(t *testing.T, plen int, eth bool, gsoMaxSize uint32) {
 	// dummy needs to know nothing, we just compare if dummy.Rec == want
 	dummy := initDummy(0, 0, 1)
 	c := newContext(t, &Options{Address: laddr, MTU: mtu, EthernetHeader: eth, Dev: dummy /*GSOMaxSize: gsoMaxSize*/})
-	defer c.cleanup()
+	defer c.cleanup(dummy)
 
 	r := &stack.Route{
 		RemoteLinkAddress: raddr,
@@ -247,8 +245,6 @@ func TestWritePacket(t *testing.T) {
 			}
 		}
 	}
-	// remove later
-	fmt.Println("Success: TestWritePacket")
 }
 
 func TestPreserveSrcAddress(t *testing.T) {
@@ -256,7 +252,7 @@ func TestPreserveSrcAddress(t *testing.T) {
 
 	dummy := initDummy(0, 0, 1)
 	c := newContext(t, &Options{Address: laddr, MTU: mtu, EthernetHeader: true, Dev: dummy})
-	defer c.cleanup()
+	defer c.cleanup(dummy)
 
 	// Set LocalLinkAddress in route to the value of the bridged address.
 	r := &stack.Route{
@@ -291,14 +287,13 @@ func TestPreserveSrcAddress(t *testing.T) {
 func TestDeliverPacket(t *testing.T) {
 	lengths := []int{100, 1000}
 	eths := []bool{true, false}
-	// TODO per packet: write expected packet to dummy.PktData, get the packet from the dispatcher and compare
-	dummy := initDummy(512, 1, 0)
 
 	for _, eth := range eths {
 		for _, plen := range lengths {
 			t.Run(fmt.Sprintf("Eth=%v,PayloadLen=%v", eth, plen), func(t *testing.T) {
+				dummy := initDummy(512, 1, 0)
 				c := newContext(t, &Options{Address: laddr, MTU: mtu, EthernetHeader: eth, Dev: dummy})
-				defer c.cleanup()
+				defer c.cleanup(dummy)
 
 				// Build packet.
 				b := make([]byte, plen)
@@ -350,8 +345,6 @@ func TestDeliverPacket(t *testing.T) {
 			})
 		}
 	}
-	// remove later
-	fmt.Println("Success: TestDeliverPacket")
 }
 
 func TestBufConfigFirst(t *testing.T) {
@@ -363,6 +356,4 @@ func TestBufConfigFirst(t *testing.T) {
 	if got < want {
 		t.Errorf("first view has an invalid size: got %d, want >= %d", got, want)
 	}
-	// remove later
-	fmt.Println("Success: TestBufConfigFirst")
 }
