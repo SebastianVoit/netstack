@@ -98,8 +98,12 @@ func (c *context) cleanup(d *driver.IxyDummy) {
 	return driver.IxyInit(pci, rxqs, txqs)
 }*/
 
+// to call the closed func, we need an rx queue that can later return an error
 func initDummy(rxBufs uint32, rxQueues, txQueues uint16) *driver.IxyDummy {
 	// allocate BatchSize entries, we don't need more for testing
+	if rxQueues < 1 {
+		rxQueues = 1
+	}
 	var mp *driver.Mempool
 	if rxBufs > 0 {
 		mp = driver.MemoryAllocateMempool(rxBufs, 0)

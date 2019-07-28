@@ -169,7 +169,7 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 	}
 	devStats := opts.Dev.GetIxyDev()
 
-	/* stats should we need them:
+	/* ixy.go stats should we need them:
 	stats := driver.DeviceStats{}
 	stats.StatsInit(opts.Dev)
 	*/
