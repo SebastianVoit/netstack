@@ -116,6 +116,7 @@ func initDummy(rxBufs uint32, rxQueues, txQueues uint16) *driver.IxyDummy {
 		RxMpool:  mp,
 		RxClosed: make([]bool, rxQueues),
 		TxClosed: make([]bool, txQueues),
+		TxDone:   make(chan struct{}),
 	}
 	return dummy
 }
@@ -196,18 +197,19 @@ func testWritePacket(t *testing.T, plen int, eth bool, gsoMaxSize uint32) {
 		payload[i] = uint8(rand.Intn(256))
 	}
 	want := append(hdr.View(), payload...)
+	// WritePacket never returns
 	if err := c.ep.WritePacket(r, nil /*gso*/, hdr, payload.ToVectorisedView(), proto); err != nil {
 		t.Fatalf("WritePacket failed: %v", err)
 	}
-
 	// we currently send one test packet, do this with a whole BatchSize of packets
-	// timeout so we can be sure that the packets have been sent (batching)
-	time.Sleep(2 * tw)
+	<-dummy.TxDone
 	// Get Rec from dummy, then compare with what we wrote.
 	b = make([]byte, mtu)
-	if copy(b, dummy.Rec[0]) == 0 {
+	if len(dummy.Rec) == 0 {
 		t.Fatalf("No packet sent")
 	}
+	n := copy(b, dummy.Rec[0])
+	b = b[:n]
 	if eth {
 		h := header.Ethernet(b)
 		b = b[header.EthernetMinimumSize:]
@@ -272,19 +274,18 @@ func TestPreserveSrcAddress(t *testing.T) {
 	}
 
 	// Read from the ixy dummy, then compare with what we wrote.
+	<-dummy.TxDone
 	b := make([]byte, mtu)
-	var n int
-	if n = copy(b, dummy.Rec[0]); n == 0 {
+	if len(dummy.Rec) == 0 {
 		t.Fatalf("No packet sent")
 	}
+	n := copy(b, dummy.Rec[0])
 	b = b[:n]
 	h := header.Ethernet(b)
 
 	if a := h.SourceAddress(); a != baddr {
 		t.Fatalf("SourceAddress() = %v, want %v", a, baddr)
 	}
-	// remove later
-	fmt.Println("Success: TestPreserveSrcAddress")
 }
 
 // Test RxBatch
@@ -318,13 +319,6 @@ func TestDeliverPacket(t *testing.T) {
 					})
 					all = append(hdr, b...)
 				}
-
-				// Write packet via the file descriptor.
-				/*
-					if _, err := syscall.Write(c.fds[0], all); err != nil {
-						t.Fatalf("Write failed: %v", err)
-					}*/
-
 				// "Write" the packet -> will be received the next time RxBatch is called
 				dummy.PktData = [][]byte{all}
 

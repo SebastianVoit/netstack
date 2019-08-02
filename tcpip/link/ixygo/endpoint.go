@@ -200,8 +200,9 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 			bufs:  make([]*driver.PktBuf, BatchSize),
 			timer: time.NewTimer(0), // can't find anything on how to initialize an empty timer -> start with time 0 and stop immediately
 		}
-		tbufs[i].timer.Stop()
-		<-tbufs[i].timer.C
+		if !tbufs[i].timer.Stop() {
+			//<-tbufs[i].timer.C
+		}
 	}
 	e := &endpoint{
 		rxQueues:   devStats.NumRxQueues,
@@ -230,7 +231,7 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 	}
 
 	for i := uint16(0); i < e.txQueues; i++ {
-		e.txMempools[i].mempool = driver.MemoryAllocateMempool(e.txEntries, e.entrySize)
+		e.txMempools[i] = &txMempool{mempool: driver.MemoryAllocateMempool(e.txEntries, e.entrySize)}
 	}
 
 	return stack.RegisterLinkEndpoint(e), nil
@@ -303,11 +304,9 @@ func (e *endpoint) WritePacket(r *stack.Route, gso *stack.GSO, hdr buffer.Prepen
 		}
 		eth.Encode(ethHdr)
 	}
-
 	// implement GSO here should we support it in the future
 
-	queueID := e.getQueueID(r, "")
-	return e.ixySend(queueID, hdr.View(), payload.ToView(), nil)
+	return e.ixySend(e.getQueueID(r, ""), hdr.View(), payload.ToView(), nil)
 }
 
 // WriteRawPacket writes a raw packet directly to the file descriptor.
@@ -338,24 +337,26 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	if len(b2) != 0 {
 		at += copy(pbuf.Pkt[at:], b2)
 		if len(b3) != 0 {
-			copy(pbuf.Pkt[at:], b3)
+			at += copy(pbuf.Pkt[at:], b3)
 		}
 	}
+	pbuf.Size = uint32(at)
 	// add packet to the sending slice
 	tb := e.txBufs[queueID]
 	tb.bufs[tb.filled] = pbuf
 	tb.filled++
+	// check whether batchSize has been reached -> send
 	if tb.filled == len(tb.bufs) {
 		// stop timer and drain channel
 		if !tb.timer.Stop() {
-			<-tb.timer.C
+			//<-tb.timer.C
 		}
-		e.txMempools[queueID].mu.Lock()
+		e.sendTx(queueID)
 	}
 	// check if timer can be stopped. Yes -> start new one. No -> reset and enqueue
 	if !tb.timer.Stop() {
 		// Timer already expired -> goroutine has been called and we need a new timer
-		<-tb.timer.C
+		//<-tb.timer.C // this blocks forever
 		tb.timer = time.AfterFunc(tw, func() {
 			// acquire lock and send. Should this happen while the last packet is enqueued filled is resetted to 0 afterwards and sendTx() does nothing
 			e.txMempools[queueID].mu.Lock()
@@ -376,7 +377,7 @@ func (e *endpoint) sendTx(queueID uint16) *tcpip.Error {
 	if tb.filled == 0 {
 		return nil
 	}
-	numTx, err := e.dev.TxBatch(queueID, tb.bufs)
+	numTx, err := e.dev.TxBatch(queueID, tb.bufs[:tb.filled])
 	// drop packets that didn't get sent first, then handle error
 	if numTx < uint32(tb.filled) {
 		for i := numTx; i < uint32(tb.filled); i++ {
