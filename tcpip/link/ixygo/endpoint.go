@@ -9,6 +9,7 @@ package ixygo
 
 import (
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"time"
 
@@ -288,6 +289,16 @@ func (e *endpoint) LinkAddress() tcpip.LinkAddress {
 // WritePacket writes outbound packets to the ixgbe NIC. If it is not
 // currently writable, the packet is dropped.
 func (e *endpoint) WritePacket(r *stack.Route, gso *stack.GSO, hdr buffer.Prependable, payload buffer.VectorisedView, protocol tcpip.NetworkProtocolNumber) *tcpip.Error {
+
+	// get destination IP for queue matching
+	var dest tcpip.Address
+	switch protocol {
+	case header.IPv4Version:
+		dest = header.IPv4(hdr.View()).DestinationAddress()
+	case header.IPv6Version:
+		dest = header.IPv6(hdr.View()).DestinationAddress()
+	}
+
 	if e.hdrSize > 0 {
 		// Add ethernet header if needed.
 		eth := header.Ethernet(hdr.Prepend(header.EthernetMinimumSize))
@@ -306,18 +317,25 @@ func (e *endpoint) WritePacket(r *stack.Route, gso *stack.GSO, hdr buffer.Prepen
 	}
 	// implement GSO here should we support it in the future
 
-	return e.ixySend(e.getQueueID(r, ""), hdr.View(), payload.ToView(), nil)
+	return e.ixySend(e.getQueueID(dest), hdr.View(), payload.ToView(), nil)
 }
 
 // WriteRawPacket writes a raw packet directly to the file descriptor.
 func (e *endpoint) WriteRawPacket(dest tcpip.Address, packet []byte) *tcpip.Error {
-	return e.ixySend(e.getQueueID(nil, dest), packet, nil, nil)
+	return e.ixySend(e.getQueueID(dest), packet, nil, nil)
 }
 
 // if a route is given, this method does not check for dest
-func (e *endpoint) getQueueID(r *stack.Route, dest tcpip.Address) uint16 {
-	// TODO: goroutines <-> queueID, for now everything uses queue 0
-	return 0
+func (e *endpoint) getQueueID(dest tcpip.Address) uint16 {
+	// Best effort goroutine <-> queue matching. Can't do more since it would impose additional constraints on the rest of the stack
+	// We use FNV-1a due to its speed and good randomness (https://softwareengineering.stackexchange.com/questions/49550/which-hashing-algorithm-is-best-for-uniqueness-and-speed)
+	// Could use Murmur3 (https://github.com/spaolacci/murmur3) instead but FNV-1a is part of the standard go installation ¯\_(ツ)_/¯
+	if dest == "" {
+		return 0
+	}
+	h := fnv.New32a()
+	h.Write([]byte(dest))
+	return uint16(h.Sum32() % uint32(e.txQueues))
 }
 
 func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {

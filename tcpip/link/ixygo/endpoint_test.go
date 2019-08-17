@@ -253,6 +253,91 @@ func TestWritePacket(t *testing.T) {
 	}
 }
 
+func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
+	dummy := initDummy(0, 0, txqs)
+	c := newContext(t, &Options{Address: laddr, MTU: mtu, EthernetHeader: eth, Dev: dummy})
+	defer c.cleanup(dummy)
+
+	r := &stack.Route{
+		RemoteLinkAddress: raddr,
+	}
+
+	bb := make([][]byte, BatchSize)
+	want := make([][]byte, BatchSize)
+	for i := 0; i < BatchSize; i++ {
+		// TODO: send whole batch of packets (maybe even multiple), then <-dummy.TxDone
+		// Build header.
+		hdr := buffer.NewPrependable(int(c.ep.MaxHeaderLength()) + 100)
+		b := hdr.Prepend(100)
+		for j := range b {
+			b[j] = uint8(rand.Intn(256))
+		}
+		// Build payload and write.
+		payload := make(buffer.View, plen)
+		for i := range payload {
+			payload[i] = uint8(rand.Intn(256))
+		}
+		want[i] = append(hdr.View(), payload...)
+		// WritePacket never returns
+		if err := c.ep.WritePacket(r, nil /*gso*/, hdr, payload.ToVectorisedView(), proto); err != nil {
+			t.Fatalf("WritePacket failed: %v", err)
+		}
+	}
+	<-dummy.TxDone
+
+	// TODO: check batches
+	// Get Rec from dummy, then compare with what we wrote.
+	if len(dummy.Rec) < BatchSize {
+		t.Fatal("WriteBatch failed: received less then BatchSize packets")
+	}
+	for i := 0; i < len(dummy.Rec); i++ {
+		bb[i] = make([]byte, mtu)
+		n := copy(bb[i], dummy.Rec[i])
+		bb[i] = bb[i][:n]
+		if eth {
+			h := header.Ethernet(bb[i])
+			bb[i] = bb[i][header.EthernetMinimumSize:]
+
+			if a := h.SourceAddress(); a != laddr {
+				t.Fatalf("SourceAddress() = %v, want %v", a, laddr)
+			}
+
+			if a := h.DestinationAddress(); a != raddr {
+				t.Fatalf("DestinationAddress() = %v, want %v", a, raddr)
+			}
+
+			if et := h.Type(); et != proto {
+				t.Fatalf("Type() = %v, want %v", et, proto)
+			}
+		}
+		if len(bb[i]) != len(want[i]) {
+			t.Fatalf("Read returned %v bytes, want %v", len(bb[i]), len(want[i]))
+		}
+		if !bytes.Equal(bb[i], want[i]) {
+			t.Fatalf("Read returned %x, want %x", bb[i], want[i])
+		}
+	}
+}
+
+// Test whether filling the buffers works correctly (TX)
+func TestWriteBatch(t *testing.T) {
+	txqs := []uint16{1 /*, 2, 4, 8, 16*/}
+	eths := []bool{true, false}
+	lengths := []int{0, 100, 1000}
+	for _, numtxqs := range txqs {
+		for _, eth := range eths {
+			for _, plen := range lengths {
+				t.Run(
+					fmt.Sprintf("TxQueues=%v,Eth=%v,PayloadLen=%v", txqs, eth, plen),
+					func(t *testing.T) {
+						testWriteBatch(t, numtxqs, eth, plen)
+					},
+				)
+			}
+		}
+	}
+}
+
 func TestPreserveSrcAddress(t *testing.T) {
 	baddr := tcpip.LinkAddress("\xcc\xbb\xaa\x77\x88\x99")
 
