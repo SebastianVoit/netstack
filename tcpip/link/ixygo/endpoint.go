@@ -199,10 +199,7 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 	for i := 0; i < len(tbufs); i++ {
 		tbufs[i] = &txb{
 			bufs:  make([]*driver.PktBuf, BatchSize),
-			timer: time.NewTimer(0), // can't find anything on how to initialize an empty timer -> start with time 0 and stop immediately
-		}
-		if !tbufs[i].timer.Stop() {
-			//<-tbufs[i].timer.C
+			timer: time.NewTimer(0), // not running -> stop and drain as normal
 		}
 	}
 	e := &endpoint{
@@ -330,6 +327,7 @@ func (e *endpoint) getQueueID(dest tcpip.Address) uint16 {
 	// Best effort goroutine <-> queue matching. Can't do more since it would impose additional constraints on the rest of the stack
 	// We use FNV-1a due to its speed and good randomness (https://softwareengineering.stackexchange.com/questions/49550/which-hashing-algorithm-is-best-for-uniqueness-and-speed)
 	// Could use Murmur3 (https://github.com/spaolacci/murmur3) instead but FNV-1a is part of the standard go installation ¯\_(ツ)_/¯
+	// TODO: build dict after first computation -> only lookup instead of hash func
 	if dest == "" {
 		return 0
 	}
@@ -363,20 +361,24 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	tb := e.txBufs[queueID]
 	tb.bufs[tb.filled] = pbuf
 	tb.filled++
+
+	// TODO: fix timer
+
 	// check whether batchSize has been reached -> send
 	if tb.filled == len(tb.bufs) {
 		// stop timer and drain channel
 		if !tb.timer.Stop() {
-			//<-tb.timer.C
+			<-tb.timer.C
 		}
 		e.sendTx(queueID)
+		return nil
 	}
-	// check if timer can be stopped. Yes -> start new one. No -> reset and enqueue
+
+	// check if timer can be stopped (= has not expired yet). False -> start new one. True -> reset
 	if !tb.timer.Stop() {
-		// Timer already expired -> goroutine has been called and we need a new timer
-		//<-tb.timer.C // this blocks forever
+		<-tb.timer.C
 		tb.timer = time.AfterFunc(tw, func() {
-			// acquire lock and send. Should this happen while the last packet is enqueued filled is resetted to 0 afterwards and sendTx() does nothing
+			// acquire lock and send. Should this happen while the last packet is enqueued (and thus waits util the respective send is complete), filled is reset to 0 afterwards and sendTx() does nothing
 			e.txMempools[queueID].mu.Lock()
 			defer e.txMempools[queueID].mu.Unlock()
 			// may implement error handling in the future but since TxBatch doesn't return errors that's kinda pointless

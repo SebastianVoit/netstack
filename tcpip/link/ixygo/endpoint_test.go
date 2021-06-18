@@ -173,7 +173,7 @@ func TestAddress(t *testing.T) {
 	}
 }
 
-// currently this does not accumulate packets and only sends one packet per TxBatch -> good enough since the dummy doesn't have an overhead
+// send a single packet
 func testWritePacket(t *testing.T, plen int, eth bool, gsoMaxSize uint32) {
 	// dummy needs to know nothing, we just compare if dummy.Rec == want
 	dummy := initDummy(0, 0, 1)
@@ -201,7 +201,6 @@ func testWritePacket(t *testing.T, plen int, eth bool, gsoMaxSize uint32) {
 	if err := c.ep.WritePacket(r, nil /*gso*/, hdr, payload.ToVectorisedView(), proto); err != nil {
 		t.Fatalf("WritePacket failed: %v", err)
 	}
-	// we currently send one test packet, do this with a whole BatchSize of packets
 	<-dummy.TxDone
 	// Get Rec from dummy, then compare with what we wrote.
 	b = make([]byte, mtu)
@@ -265,7 +264,6 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 	bb := make([][]byte, BatchSize)
 	want := make([][]byte, BatchSize)
 	for i := 0; i < BatchSize; i++ {
-		// TODO: send whole batch of packets (maybe even multiple), then <-dummy.TxDone
 		// Build header.
 		hdr := buffer.NewPrependable(int(c.ep.MaxHeaderLength()) + 100)
 		b := hdr.Prepend(100)
@@ -278,14 +276,13 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 			payload[i] = uint8(rand.Intn(256))
 		}
 		want[i] = append(hdr.View(), payload...)
-		// WritePacket never returns
+		// TODO: do this in parallel to see if locking works
 		if err := c.ep.WritePacket(r, nil /*gso*/, hdr, payload.ToVectorisedView(), proto); err != nil {
 			t.Fatalf("WritePacket failed: %v", err)
 		}
 	}
 	<-dummy.TxDone
 
-	// TODO: check batches
 	// Get Rec from dummy, then compare with what we wrote.
 	if len(dummy.Rec) < BatchSize {
 		t.Fatal("WriteBatch failed: received less then BatchSize packets")
@@ -320,6 +317,7 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 }
 
 // Test whether filling the buffers works correctly (TX)
+// TODO?: run with different batch fill percentages (e.g. does the normal reset work?)
 func TestWriteBatch(t *testing.T) {
 	txqs := []uint16{1 /*, 2, 4, 8, 16*/}
 	eths := []bool{true, false}
