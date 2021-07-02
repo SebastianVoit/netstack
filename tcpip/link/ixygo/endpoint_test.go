@@ -18,9 +18,12 @@ package ixygo
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"log"
 	"math/rand"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +44,10 @@ const (
 	proto      = 10
 	csumOffset = 48
 	//gsoMSS     = 500
+)
+
+const (
+	timeout = time.Second * 5
 )
 
 type packetInfo struct {
@@ -82,7 +89,6 @@ func newContext(t *testing.T, opt *Options) *context {
 	return c
 }
 
-// revise: extend driver with Closed(queueID uint16) func that returns true or false -> can close queues
 func (c *context) cleanup(d *driver.IxyDummy) {
 	// close the dummy so the channel will be filled
 	for i := uint16(0); i < c.dev.GetIxyDev().NumRxQueues; i++ {
@@ -127,8 +133,6 @@ func (c *context) DeliverNetworkPacket(linkEP stack.LinkEndpoint, remote tcpip.L
 
 // be careful from here on: drivers cannot be cleaned up except by program termination
 // due to this fact be careful from here on, especially when using muliple contexts in one test
-
-// Tests fail currently: multiple cleanups on the same context -> why?
 
 func TestNoEthernetProperties(t *testing.T) {
 	dummy := initDummy(0, 0, 0)
@@ -201,7 +205,14 @@ func testWritePacket(t *testing.T, plen int, eth bool, gsoMaxSize uint32) {
 	if err := c.ep.WritePacket(r, nil /*gso*/, hdr, payload.ToVectorisedView(), proto); err != nil {
 		t.Fatalf("WritePacket failed: %v", err)
 	}
-	<-dummy.TxDone
+	// timeout in case of blocking
+	to := time.NewTimer(timeout)
+	select {
+	case <-dummy.TxDone:
+		to.Stop()
+	case <-to.C:
+		log.Fatalf("Timeout when waiting for the driver to finish the TxBatch")
+	}
 	// Get Rec from dummy, then compare with what we wrote.
 	b = make([]byte, mtu)
 	if len(dummy.Rec) == 0 {
@@ -263,25 +274,72 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 
 	bb := make([][]byte, BatchSize)
 	want := make([][]byte, BatchSize)
-	for i := 0; i < BatchSize; i++ {
-		// Build header.
-		hdr := buffer.NewPrependable(int(c.ep.MaxHeaderLength()) + 100)
-		b := hdr.Prepend(100)
-		for j := range b {
-			b[j] = uint8(rand.Intn(256))
-		}
-		// Build payload and write.
-		payload := make(buffer.View, plen)
-		for i := range payload {
-			payload[i] = uint8(rand.Intn(256))
-		}
-		want[i] = append(hdr.View(), payload...)
-		// TODO: do this in parallel to see if locking works
-		if err := c.ep.WritePacket(r, nil /*gso*/, hdr, payload.ToVectorisedView(), proto); err != nil {
-			t.Fatalf("WritePacket failed: %v", err)
-		}
+	writeErr := make(chan struct {
+		*tcpip.Error
+		uint32
+	}, BatchSize)
+	var wg sync.WaitGroup
+	for i := uint32(0); i < BatchSize; i++ {
+		wg.Add(1)
+		go func(i uint32) {
+			hdr := buffer.NewPrependable(int(c.ep.MaxHeaderLength()) + 100)
+			b := hdr.Prepend(100)
+			for j := range b {
+				b[j] = uint8(rand.Intn(256))
+			}
+			// use index as first 32 payload bits to check later
+			binary.BigEndian.PutUint32(b[:4], i)
+			// Build payload and write.
+			payload := make(buffer.View, plen)
+			for i := range payload {
+				payload[i] = uint8(rand.Intn(256))
+			}
+			want[i] = append(hdr.View(), payload...)
+			if err := c.ep.WritePacket(r, nil /*gso*/, hdr, payload.ToVectorisedView(), proto); err != nil {
+				writeErr <- struct {
+					*tcpip.Error
+					uint32
+				}{err, i}
+			}
+		}(i)
+		/*
+			// Build header.
+			hdr := buffer.NewPrependable(int(c.ep.MaxHeaderLength()) + 100)
+			b := hdr.Prepend(100)
+			for j := range b {
+				b[j] = uint8(rand.Intn(256))
+			}
+			// Build payload and write.
+			payload := make(buffer.View, plen)
+			for i := range payload {
+				payload[i] = uint8(rand.Intn(256))
+			}
+			want[i] = append(hdr.View(), payload...)
+			if err := c.ep.WritePacket(r, nil / *gso* /, hdr, payload.ToVectorisedView(), proto); err != nil {
+				t.Fatalf("WritePacket failed: %v", err)
+			}
+		*/
 	}
-	<-dummy.TxDone
+	wg.Wait()
+	// group errors and log.Fatal them
+	errStr := "Error(s) occured during parallel PacketWrites. Listing errors:\n"
+	noErr := true
+	for i := len(writeErr); i > 0; i-- {
+		noErr = false
+		tmp := <-writeErr
+		errStr += fmt.Sprintf("\tWritePacket failed in goroutine %v:\n%v\n", tmp.uint32, tmp.Error)
+	}
+	if !noErr {
+		t.Fatal(errStr)
+	}
+
+	to := time.NewTimer(timeout)
+	select {
+	case <-dummy.TxDone:
+		to.Stop()
+	case <-to.C:
+		log.Fatalf("Timeout when waiting for the driver to finish the TxBatch")
+	}
 
 	// Get Rec from dummy, then compare with what we wrote.
 	if len(dummy.Rec) < BatchSize {
@@ -310,8 +368,9 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 		if len(bb[i]) != len(want[i]) {
 			t.Fatalf("Read returned %v bytes, want %v", len(bb[i]), len(want[i]))
 		}
-		if !bytes.Equal(bb[i], want[i]) {
-			t.Fatalf("Read returned %x, want %x", bb[i], want[i])
+		pId := binary.BigEndian.Uint32(bb[i][:4])
+		if !bytes.Equal(bb[i], want[pId]) {
+			t.Fatalf("Read from packet with id %v returned %x, want %x.", pId, bb[i], want[i])
 		}
 	}
 }

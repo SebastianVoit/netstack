@@ -362,8 +362,6 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	tb.bufs[tb.filled] = pbuf
 	tb.filled++
 
-	// TODO: fix timer
-
 	// check whether batchSize has been reached -> send
 	if tb.filled == len(tb.bufs) {
 		// stop timer and drain channel

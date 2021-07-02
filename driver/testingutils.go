@@ -1,6 +1,9 @@
 package driver
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+)
 
 // IxyDummy is a dummy implementation for testing purposes
 type IxyDummy struct {
@@ -49,6 +52,12 @@ func (d *IxyDummy) TxBatch(queueID uint16, pb []*PktBuf) (uint32, error) {
 		copy(d.Rec[i], pb[i].Pkt)
 		PktBufFree(pb[i])
 	}
+	select {
+	case <-d.TxDone:
+		log.Fatalf("TxDone channel already filled. TxBatch dump:\n%v", d.Rec)
+	default:
+	}
+	// blocks when called from TxBatch test
 	d.TxDone <- struct{}{}
 	return uint32(len(pb)), nil
 }
