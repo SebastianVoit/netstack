@@ -122,7 +122,7 @@ func initDummy(rxBufs uint32, rxQueues, txQueues uint16) *driver.IxyDummy {
 		RxMpool:  mp,
 		RxClosed: make([]bool, rxQueues),
 		TxClosed: make([]bool, txQueues),
-		TxDone:   make(chan struct{}),
+		TxDone:   make(chan struct{}, 1),
 	}
 	return dummy
 }
@@ -279,55 +279,40 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 		uint32
 	}, BatchSize)
 	var wg sync.WaitGroup
+	// TODO: fix id in packet (e.g. payload or header? What do for 0 length payload?)
 	for i := uint32(0); i < BatchSize; i++ {
 		wg.Add(1)
-		go func(i uint32) {
+		go func(id uint32, wg *sync.WaitGroup) {
+			defer wg.Done()
 			hdr := buffer.NewPrependable(int(c.ep.MaxHeaderLength()) + 100)
 			b := hdr.Prepend(100)
 			for j := range b {
 				b[j] = uint8(rand.Intn(256))
 			}
 			// use index as first 32 payload bits to check later
-			binary.BigEndian.PutUint32(b[:4], i)
+			binary.BigEndian.PutUint32(b[:4], id)
 			// Build payload and write.
 			payload := make(buffer.View, plen)
 			for i := range payload {
 				payload[i] = uint8(rand.Intn(256))
 			}
-			want[i] = append(hdr.View(), payload...)
+			want[id] = append(hdr.View(), payload...)
 			if err := c.ep.WritePacket(r, nil /*gso*/, hdr, payload.ToVectorisedView(), proto); err != nil {
 				writeErr <- struct {
 					*tcpip.Error
 					uint32
-				}{err, i}
+				}{err, id}
 			}
-		}(i)
-		/*
-			// Build header.
-			hdr := buffer.NewPrependable(int(c.ep.MaxHeaderLength()) + 100)
-			b := hdr.Prepend(100)
-			for j := range b {
-				b[j] = uint8(rand.Intn(256))
-			}
-			// Build payload and write.
-			payload := make(buffer.View, plen)
-			for i := range payload {
-				payload[i] = uint8(rand.Intn(256))
-			}
-			want[i] = append(hdr.View(), payload...)
-			if err := c.ep.WritePacket(r, nil / *gso* /, hdr, payload.ToVectorisedView(), proto); err != nil {
-				t.Fatalf("WritePacket failed: %v", err)
-			}
-		*/
+		}(i, &wg)
 	}
 	wg.Wait()
-	// group errors and log.Fatal them
-	errStr := "Error(s) occured during parallel PacketWrites. Listing errors:\n"
+	// group errors and t.Fatal them
+	errStr := "Error(s) occured during parallel PacketWrites. Listing errors:"
 	noErr := true
 	for i := len(writeErr); i > 0; i-- {
 		noErr = false
 		tmp := <-writeErr
-		errStr += fmt.Sprintf("\tWritePacket failed in goroutine %v:\n%v\n", tmp.uint32, tmp.Error)
+		errStr += fmt.Sprintf("\n\tWritePacket failed in goroutine %v:\n%v", tmp.uint32, tmp.Error)
 	}
 	if !noErr {
 		t.Fatal(errStr)
@@ -343,7 +328,7 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 
 	// Get Rec from dummy, then compare with what we wrote.
 	if len(dummy.Rec) < BatchSize {
-		t.Fatal("WriteBatch failed: received less then BatchSize packets")
+		t.Fatal("WriteBatch failed: received less then BatchSize packets.\nThis may occur if the batch timer expired before the next packet, sending an incomplete batch.")
 	}
 	for i := 0; i < len(dummy.Rec); i++ {
 		bb[i] = make([]byte, mtu)
@@ -368,7 +353,12 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 		if len(bb[i]) != len(want[i]) {
 			t.Fatalf("Read returned %v bytes, want %v", len(bb[i]), len(want[i]))
 		}
+		// TODO: check if this is this is the correct pId location
+		// should be because ethernet header is stripped beforehand and the id are the first 4B of what follows
 		pId := binary.BigEndian.Uint32(bb[i][:4])
+		if pId > BatchSize {
+			t.Fatalf("pId out of legal pId range. This occurs if it is read incorrectly.")
+		}
 		if !bytes.Equal(bb[i], want[pId]) {
 			t.Fatalf("Read from packet with id %v returned %x, want %x.", pId, bb[i], want[i])
 		}
@@ -376,7 +366,6 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 }
 
 // Test whether filling the buffers works correctly (TX)
-// TODO?: run with different batch fill percentages (e.g. does the normal reset work?)
 func TestWriteBatch(t *testing.T) {
 	txqs := []uint16{1 /*, 2, 4, 8, 16*/}
 	eths := []bool{true, false}
@@ -385,7 +374,7 @@ func TestWriteBatch(t *testing.T) {
 		for _, eth := range eths {
 			for _, plen := range lengths {
 				t.Run(
-					fmt.Sprintf("TxQueues=%v,Eth=%v,PayloadLen=%v", txqs, eth, plen),
+					fmt.Sprintf("TxQueues=%v,Eth=%v,PayloadLen=%v", numtxqs, eth, plen),
 					func(t *testing.T) {
 						testWriteBatch(t, numtxqs, eth, plen)
 					},
