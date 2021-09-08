@@ -87,8 +87,9 @@ func writer(ch chan struct{}, ep tcpip.Endpoint) {
 }
 
 func main() {
+	flag.Parse()
 	if len(os.Args) != 6 {
-		log.Fatal("Usage: ", os.Args[0], " <tun-device> <local-ipv4-address> <local-port> <remote-ipv4-address> <remote-port>")
+		log.Fatal("Usage: ", os.Args[0], " <pci-address> <local-ipv4-address> <local-port> <remote-ipv4-address> <remote-port>")
 	}
 
 	queueErrStr := ""
@@ -126,11 +127,11 @@ func main() {
 	// Parse the IP address. Support both ipv4 and ipv6.
 	parsedAddr := net.ParseIP(addrName)
 	if parsedAddr == nil {
-		log.Fatalf("Bad IP address: %v", addrName)
+		log.Fatalf("Bad local IP address: %v", addrName)
 	}
 	parsedRemoteAddr := net.ParseIP(remoteAddrName)
 	if parsedRemoteAddr == nil {
-		log.Fatalf("Bad IP address: %v", remoteAddrName)
+		log.Fatalf("Bad remote IP address: %v", remoteAddrName)
 	}
 
 	var addr tcpip.Address
