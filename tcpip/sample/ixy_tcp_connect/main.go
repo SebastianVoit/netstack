@@ -15,18 +15,21 @@
 // +build linux
 
 // This sample creates a stack with TCP and IPv4 protocols on top of an ixy
-// device, and listens on a port. Data received by the server in the accepted
-// connections is echoed back to the clients.
+// device, and connects to a peer. Similar to "nc <address> <port>". While the
+// sample is running, attempts to connect to its IPv4 address will result in
+// a RST segment.
 //
 // ixy.go is implemented for Intel ixgbe 82599 NICs. Use lspci to find out its
 // pci address and enable huge pages via the script in /driver.
 // All disclaimers for ixy.go apply here as well.
-
-// Connect via telnet or nc.
+//
+// This will attempt to connect to the linux host's stack. One can run nc in
+// listen mode to accept a connect from ixy_tcp_connect and exchange data.
 
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"log"
@@ -39,8 +42,9 @@ import (
 
 	"github.com/SebastianVoit/netstack/driver"
 	"github.com/SebastianVoit/netstack/tcpip"
+	"github.com/SebastianVoit/netstack/tcpip/buffer"
 	"github.com/SebastianVoit/netstack/tcpip/link/ixygo"
-	"github.com/SebastianVoit/netstack/tcpip/network/arp"
+	"github.com/SebastianVoit/netstack/tcpip/link/sniffer"
 	"github.com/SebastianVoit/netstack/tcpip/network/ipv4"
 	"github.com/SebastianVoit/netstack/tcpip/network/ipv6"
 	"github.com/SebastianVoit/netstack/tcpip/stack"
@@ -53,38 +57,38 @@ var verbose = flag.Bool("v", false, "the verbose flag enables additional feedbac
 var numRx = flag.Uint64("numRx", 1, "number of RX queues")
 var numTx = flag.Uint64("numTx", 1, "number of TX queues")
 
-func echo(wq *waiter.Queue, ep tcpip.Endpoint) {
-	defer ep.Close()
+// writer reads from standard input and writes to the endpoint until standard
+// input is closed. It signals that it's done by closing the provided channel.
+func writer(ch chan struct{}, ep tcpip.Endpoint) {
+	defer func() {
+		ep.Shutdown(tcpip.ShutdownWrite)
+		close(ch)
+	}()
 
-	// Create wait queue entry that notifies a channel.
-	waitEntry, notifyCh := waiter.NewChannelEntry(nil)
-
-	wq.EventRegister(&waitEntry, waiter.EventIn)
-	defer wq.EventUnregister(&waitEntry)
-
+	r := bufio.NewReader(os.Stdin)
 	for {
-		v, _, err := ep.Read(nil)
+		v := buffer.NewView(1024)
+		n, err := r.Read(v)
 		if err != nil {
-			if err == tcpip.ErrWouldBlock {
-				<-notifyCh
-				continue
-			}
-
 			return
 		}
 
-		if *verbose {
-			fmt.Printf("Received request, sending TCP reply.\n")
-		}
+		v.CapLength(n)
+		for len(v) > 0 {
+			n, _, err := ep.Write(tcpip.SlicePayload(v), tcpip.WriteOptions{})
+			if err != nil {
+				fmt.Println("Write failed:", err)
+				return
+			}
 
-		ep.Write(tcpip.SlicePayload(v), tcpip.WriteOptions{})
+			v.TrimFront(int(n))
+		}
 	}
 }
 
 func main() {
-	flag.Parse()
-	if len(flag.Args()) != 3 {
-		log.Fatal("Usage: ", os.Args[0], " <pci-address> <local-address> <local-port>")
+	if len(os.Args) != 6 {
+		log.Fatal("Usage: ", os.Args[0], " <tun-device> <local-ipv4-address> <local-port> <remote-ipv4-address> <remote-port>")
 	}
 
 	queueErrStr := ""
@@ -108,6 +112,8 @@ func main() {
 	pciAddr := flag.Arg(0)
 	addrName := flag.Arg(1)
 	portName := flag.Arg(2)
+	remoteAddrName := flag.Arg(3)
+	remotePortName := flag.Arg(4)
 
 	rand.Seed(time.Now().UnixNano())
 
@@ -122,6 +128,10 @@ func main() {
 	if parsedAddr == nil {
 		log.Fatalf("Bad IP address: %v", addrName)
 	}
+	parsedRemoteAddr := net.ParseIP(remoteAddrName)
+	if parsedRemoteAddr == nil {
+		log.Fatalf("Bad IP address: %v", remoteAddrName)
+	}
 
 	var addr tcpip.Address
 	var proto tcpip.NetworkProtocolNumber
@@ -132,17 +142,43 @@ func main() {
 		addr = tcpip.Address(parsedAddr.To16())
 		proto = ipv6.ProtocolNumber
 	} else {
-		log.Fatalf("Unknown IP type: %v", addrName)
+		log.Fatalf("Unknown local IP type: %v", addrName)
 	}
 
-	localPort, err := strconv.Atoi(portName)
-	if err != nil {
+	remote := tcpip.FullAddress{
+		NIC: 1,
+	}
+
+	if parsedRemoteAddr.To4() != nil {
+		if proto != ipv4.ProtocolNumber {
+			log.Fatalf("Mismatching IP versions: src is %v, dst is %v", proto, ipv4.ProtocolNumber)
+		}
+		remote.Addr = tcpip.Address(parsedRemoteAddr.To4())
+	} else if parsedAddr.To16() != nil {
+		if proto != ipv6.ProtocolNumber {
+			log.Fatalf("Mismatching IP versions: src is %v, dst is %v", proto, ipv6.ProtocolNumber)
+		}
+		remote.Addr = tcpip.Address(parsedRemoteAddr.To16())
+	} else {
+		log.Fatalf("Unknown remote IP type: %v", addrName)
+	}
+
+	var localPort uint16
+	if v, err := strconv.Atoi(portName); err != nil {
 		log.Fatalf("Unable to convert port %v: %v", portName, err)
+	} else {
+		localPort = uint16(v)
+	}
+
+	if v, err := strconv.Atoi(remotePortName); err != nil {
+		log.Fatalf("Unable to convert port %v: %v", remotePortName, err)
+	} else {
+		remote.Port = uint16(v)
 	}
 
 	// Create the stack with IP and TCP protocols, then add an ixy-based
 	// NIC and address.
-	s := stack.New([]string{ipv4.ProtocolName, ipv6.ProtocolName, arp.ProtocolName}, []string{tcp.ProtocolName}, stack.Options{})
+	s := stack.New([]string{ipv4.ProtocolName, ipv6.ProtocolName /*, arp.ProtocolName*/}, []string{tcp.ProtocolName}, stack.Options{})
 
 	mtu := uint32(1500) // TODO: get max mtu from NIC?
 
@@ -163,7 +199,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := s.CreateNIC(1, linkID); err != nil {
+	if err := s.CreateNIC(1, sniffer.New(linkID)); err != nil {
 		log.Fatal(err)
 	}
 
@@ -171,12 +207,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if err := s.AddAddress(1, arp.ProtocolNumber, arp.ProtocolAddress); err != nil {
+	/*if err := s.AddAddress(1, arp.ProtocolNumber, arp.ProtocolAddress); err != nil {
 		log.Fatal(err)
-	}
+	}*/
 
 	if *verbose {
-		fmt.Printf("Set up ixy-based NIC and added ARP and IP capabilities.\n")
+		fmt.Printf("Set up ixy-based NIC and added IP capabilities.\n")
 	}
 
 	// Add default route.
@@ -200,41 +236,60 @@ func main() {
 		log.Fatal(e)
 	}
 
-	defer ep.Close()
-
-	// TODO: NIC: 0 is from the google example, could be 1 though as the NIC we created has ID 1
-	if err := ep.Bind(tcpip.FullAddress{NIC: 0, Addr: "", Port: uint16(localPort)}); err != nil {
-		log.Fatal("Bind failed: ", err)
+	// Bind if a port is specified.
+	if localPort != 0 {
+		if err := ep.Bind(tcpip.FullAddress{NIC: 0, Addr: "", Port: localPort}); err != nil {
+			log.Fatal("Bind failed: ", err)
+		}
 	}
 
-	if err := ep.Listen(10); err != nil {
-		log.Fatal("Listen failed: ", err)
-	}
-
-	if *verbose {
-		fmt.Printf("Created, bound and started listening on TCP enpoint.\n")
-	}
-
-	// Wait for connections to appear.
+	// Issue connect request and wait for it to complete.
 	waitEntry, notifyCh := waiter.NewChannelEntry(nil)
-	wq.EventRegister(&waitEntry, waiter.EventIn)
-	defer wq.EventUnregister(&waitEntry)
+	wq.EventRegister(&waitEntry, waiter.EventOut)
+	terr := ep.Connect(remote)
+	if terr == tcpip.ErrConnectStarted {
+		fmt.Println("Connect is pending...")
+		<-notifyCh
+		terr = ep.GetSockOpt(tcpip.ErrorOption{})
+	}
+	wq.EventUnregister(&waitEntry)
 
-	if *verbose {
-		fmt.Printf("Ready to answer requests.\n")
+	if terr != nil {
+		log.Fatal("Unable to connect: ", terr)
 	}
 
+	fmt.Println("Connected")
+
+	// TODO: --------------------------------------------------------------------------------------------------------------------------------------
+
+	// Start the writer in its own goroutine.
+	writerCompletedCh := make(chan struct{})
+	go writer(writerCompletedCh, ep)
+
+	// Read data and write to standard output until the peer closes the
+	// connection from its side.
+	wq.EventRegister(&waitEntry, waiter.EventIn)
 	for {
-		n, wq, err := ep.Accept()
+		v, _, err := ep.Read(nil)
 		if err != nil {
+			if err == tcpip.ErrClosedForReceive {
+				break
+			}
+
 			if err == tcpip.ErrWouldBlock {
 				<-notifyCh
 				continue
 			}
 
-			log.Fatal("Accept() failed:", err)
+			log.Fatal("Read() failed:", err)
 		}
 
-		go echo(wq, n)
+		os.Stdout.Write(v)
 	}
+	wq.EventUnregister(&waitEntry)
+
+	// The reader has completed. Now wait for the writer as well.
+	<-writerCompletedCh
+
+	ep.Close()
 }
