@@ -110,6 +110,8 @@ type endpoint struct {
 	inboundDispatchers []linkDispatcher
 	dispatcher         stack.NetworkDispatcher
 
+	qMap map[tcpip.Address]uint16
+
 	// packetDispatchMode controls the packet dispatcher used by this
 	// endpoint.
 	// Not sure if we need that at all
@@ -228,6 +230,7 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 		closed:     opts.ClosedFunc,
 		addr:       opts.Address,
 		hdrSize:    hdrSize,
+		qMap:       make(map[tcpip.Address]uint16),
 	}
 	// if the number of txBuffers is not specified, use 2048
 	if e.txEntries == 0 {
@@ -341,15 +344,24 @@ func (e *endpoint) getQueueID(dest tcpip.Address) uint16 {
 	// Best effort goroutine <-> queue matching. Can't do more since it would impose additional constraints on the rest of the stack
 	// We use FNV-1a due to its speed and good randomness (https://softwareengineering.stackexchange.com/questions/49550/which-hashing-algorithm-is-best-for-uniqueness-and-speed)
 	// Could use Murmur3 (https://github.com/spaolacci/murmur3) instead but FNV-1a is part of the standard go installation ¯\_(ツ)_/¯
-	// TODO: build dict after first computation -> only lookup instead of hash func
 	if dest == "" {
 		return 0
 	}
-	h := fnv.New32a()
-	h.Write([]byte(dest))
-	return uint16(h.Sum32() % uint32(e.txQueues))
+	// if addr has already been matched to a queue, look up in qMap, otherwise calculate new entry
+	queue, exists := e.qMap[dest]
+	if !exists {
+		h := fnv.New32a()
+		h.Write([]byte(dest))
+		queue = uint16(h.Sum32() % uint32(e.txQueues))
+		e.qMap[dest] = queue
+	}
+	return queue
 }
 
+// ixySend enqueues the packet represented by b1-3 in the queue denoted by queueID
+// currently: not being able to allocate a packet buffer returns an error -> constant memory pool full errors -> tcp doesn't work
+// how it's supposed to be: when attempting to call sendTx(), wait until the packet buffers are free again instead of instantly returning errors
+// (if necessary: busy wait, but don't block for the rest)
 func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	// Naive, would be better to group packets into a bigger []*(driver.PktBuf) but I don't think we can
 	// buffer array for RxBatch
@@ -360,6 +372,7 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	// allocate a single packet
 	pbuf := driver.PktBufAlloc(e.txMempools[queueID].mempool) // -> trying to send a packet on a queue that doesn't exist fails here
 	if pbuf == nil {
+		// TODO: if full, handle here! (mempools constantly run out of space)
 		return tcpip.ErrNoBufferSpace
 	}
 	// copy the packet into the mempool. If the packet is longer then Pkt.Size, the rest is dropped

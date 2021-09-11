@@ -40,6 +40,7 @@ import (
 	"github.com/SebastianVoit/netstack/driver"
 	"github.com/SebastianVoit/netstack/tcpip"
 	"github.com/SebastianVoit/netstack/tcpip/link/ixygo"
+	"github.com/SebastianVoit/netstack/tcpip/link/sniffer"
 	"github.com/SebastianVoit/netstack/tcpip/network/arp"
 	"github.com/SebastianVoit/netstack/tcpip/network/ipv4"
 	"github.com/SebastianVoit/netstack/tcpip/network/ipv6"
@@ -49,6 +50,7 @@ import (
 )
 
 var mac = flag.String("mac", "aa:00:01:01:01:01", "mac address to use in ixy device")
+var sniff = flag.Bool("s", false, "enables packet sniffing to log those to stdout")
 var verbose = flag.Bool("v", false, "the verbose flag enables additional feedback during program operation")
 var numRx = flag.Uint64("numRx", 1, "number of RX queues")
 var numTx = flag.Uint64("numTx", 1, "number of TX queues")
@@ -155,16 +157,23 @@ func main() {
 
 	linkID, err := ixygo.New(&ixygo.Options{
 		Dev:            dev,
-		TxEntries:      1,
+		TxEntries:      0, // uses default
 		MTU:            mtu,
-		EthernetHeader: true, //TODO: should be true, since packets get sent out exactly as submitted to the driver
+		EthernetHeader: true,
 		Address:        tcpip.LinkAddress(maddr),
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := s.CreateNIC(1, linkID); err != nil {
-		log.Fatal(err)
+	// TODO (optional): use sniffer to write packets to a file
+	if *sniff {
+		if err := s.CreateNIC(1, sniffer.New(linkID)); err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		if err := s.CreateNIC(1, linkID); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	if err := s.AddAddress(1, proto, addr); err != nil {
@@ -202,7 +211,6 @@ func main() {
 
 	defer ep.Close()
 
-	// TODO: NIC: 0 is from the google example, could be 1 though as the NIC we created has ID 1
 	if err := ep.Bind(tcpip.FullAddress{NIC: 0, Addr: "", Port: uint16(localPort)}); err != nil {
 		log.Fatal("Bind failed: ", err)
 	}

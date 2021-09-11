@@ -53,6 +53,7 @@ import (
 )
 
 var mac = flag.String("mac", "aa:00:01:01:01:01", "mac address to use in ixy device")
+var sniff = flag.Bool("s", false, "enables packet sniffing to log those to stdout")
 var verbose = flag.Bool("v", false, "the verbose flag enables additional feedback during program operation")
 var numRx = flag.Uint64("numRx", 1, "number of RX queues")
 var numTx = flag.Uint64("numTx", 1, "number of TX queues")
@@ -192,16 +193,23 @@ func main() {
 
 	linkID, err := ixygo.New(&ixygo.Options{
 		Dev:            dev,
-		TxEntries:      1,
+		TxEntries:      0, // uses default
 		MTU:            mtu,
-		EthernetHeader: true, //TODO: should be true, since packets get sent out exactly as submitted to the driver
+		EthernetHeader: true,
 		Address:        tcpip.LinkAddress(maddr),
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := s.CreateNIC(1, sniffer.New(linkID)); err != nil {
-		log.Fatal(err)
+	// TODO (optional): use sniffer to write packets to a file
+	if *sniff {
+		if err := s.CreateNIC(1, sniffer.New(linkID)); err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		if err := s.CreateNIC(1, linkID); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	if err := s.AddAddress(1, proto, addr); err != nil {
@@ -227,7 +235,7 @@ func main() {
 	})
 
 	if *verbose {
-		fmt.Printf("Added default entry to the routing table.\n")
+		fmt.Printf("Added default entry to the routing table\n")
 	}
 
 	// Create TCP endpoint, bind it, then start listening.
@@ -235,6 +243,10 @@ func main() {
 	ep, e := s.NewEndpoint(tcp.ProtocolNumber, proto, &wq)
 	if err != nil {
 		log.Fatal(e)
+	}
+
+	if *verbose {
+		fmt.Printf("Created TCP enpoint\n")
 	}
 
 	// Bind if a port is specified.
@@ -261,10 +273,11 @@ func main() {
 
 	fmt.Println("Connected")
 
-	// TODO: --------------------------------------------------------------------------------------------------------------------------------------
-
 	// Start the writer in its own goroutine.
 	writerCompletedCh := make(chan struct{})
+	if *verbose {
+		fmt.Printf("Setup completed, starting writer and reader\n")
+	}
 	go writer(writerCompletedCh, ep)
 
 	// Read data and write to standard output until the peer closes the
@@ -291,6 +304,10 @@ func main() {
 
 	// The reader has completed. Now wait for the writer as well.
 	<-writerCompletedCh
+
+	if *verbose {
+		fmt.Printf("Connection closed, shutting down\n")
+	}
 
 	ep.Close()
 }

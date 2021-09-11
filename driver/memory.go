@@ -140,7 +140,7 @@ func MemoryAllocateMempool(numEntries, entrySize uint32) *Mempool {
 //PktBufAllocBatch allocates a batch of packets in the mempool, use PktBufAlloc for single packets
 func PktBufAllocBatch(mempool *Mempool, numBufs uint32) []*PktBuf {
 	if mempool.freeStackTop < numBufs {
-		fmt.Printf("memory pool %v only has %v free bufs, requested %v\n", mempool, mempool.freeStackTop, numBufs)
+		fmt.Printf("memory pool %p only has %v free bufs, requested %v\n", mempool, mempool.freeStackTop, numBufs)
 		numBufs = mempool.freeStackTop
 	}
 	bufs := make([]*PktBuf, numBufs)
@@ -156,7 +156,7 @@ func PktBufAllocBatch(mempool *Mempool, numBufs uint32) []*PktBuf {
 func PktBufAlloc(mempool *Mempool) *PktBuf {
 	//while it is a special case of PktBufAllocBatch, it is better no not make a slice we don't need
 	if mempool.freeStackTop < 1 {
-		fmt.Printf("memory pool %v is currently full, cannot allocate packet\n", mempool)
+		fmt.Printf("memory pool %p is currently full, cannot allocate packet\n", mempool)
 		return nil
 	}
 	mempool.freeStackTop--
