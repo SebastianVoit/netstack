@@ -66,6 +66,10 @@ func writer(ch chan struct{}, ep tcpip.Endpoint) {
 		close(ch)
 	}()
 
+	if *verbose {
+		fmt.Println("Created writer, please start typing.")
+	}
+
 	r := bufio.NewReader(os.Stdin)
 	for {
 		v := buffer.NewView(1024)
@@ -89,7 +93,7 @@ func writer(ch chan struct{}, ep tcpip.Endpoint) {
 
 func main() {
 	flag.Parse()
-	if len(os.Args) != 6 {
+	if len(flag.Args()) != 5 {
 		log.Fatal("Usage: ", os.Args[0], " <pci-address> <local-ipv4-address> <local-port> <remote-ipv4-address> <remote-port>")
 	}
 
@@ -221,7 +225,7 @@ func main() {
 	}*/
 
 	if *verbose {
-		fmt.Printf("Set up ixy-based NIC and added IP capabilities.\n")
+		fmt.Println("Set up ixy-based NIC and added IP capabilities.")
 	}
 
 	// Add default route.
@@ -235,7 +239,7 @@ func main() {
 	})
 
 	if *verbose {
-		fmt.Printf("Added default entry to the routing table\n")
+		fmt.Println("Added default entry to the routing table.")
 	}
 
 	// Create TCP endpoint, bind it, then start listening.
@@ -246,7 +250,7 @@ func main() {
 	}
 
 	if *verbose {
-		fmt.Printf("Created TCP enpoint\n")
+		fmt.Println("Created TCP enpoint.")
 	}
 
 	// Bind if a port is specified.
@@ -276,7 +280,7 @@ func main() {
 	// Start the writer in its own goroutine.
 	writerCompletedCh := make(chan struct{})
 	if *verbose {
-		fmt.Printf("Setup completed, starting writer and reader\n")
+		fmt.Println("Setup completed, starting writer and reader.")
 	}
 	go writer(writerCompletedCh, ep)
 
@@ -306,7 +310,7 @@ func main() {
 	<-writerCompletedCh
 
 	if *verbose {
-		fmt.Printf("Connection closed, shutting down\n")
+		fmt.Println("Connection closed, shutting down.")
 	}
 
 	ep.Close()

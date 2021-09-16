@@ -63,39 +63,14 @@ func (d *rxBatchDispatcher) capViews(k, n int, buffers []int) int {
 	return len(buffers)
 }
 
-func (d *rxBatchDispatcher) freePktBufs(rec int) {
-	// free all PktBufs and delete all references (slices) to them
-	for i := 0; i < rec; i++ {
-		driver.PktBufFree(d.pktBufs[i])
-		d.pktBufs[i] = nil
-	}
-	for i := 0; i < len(d.views); i++ {
-		for j := 0; j < len(d.views[i]); j++ {
-			d.views[i][j] = nil
-		}
-	}
-}
-
-// initViews builds a buffer.View structure ontop of the currently allocate PktBufs
-// ignores all pktBufs that are not filled
-func (d *rxBatchDispatcher) initViews(bufConfig []int) {
-	for k := 0; k < len(d.views) && d.pktBufs[k] != nil; k++ {
+func (d *rxBatchDispatcher) allocateViews(bufConfig []int) {
+	for k := 0; k < len(d.views); k++ {
 		// implement GSO here should we support it in the future.
-		at := 0
 		for i := 0; i < len(bufConfig); i++ {
 			if d.views[k][i] != nil {
 				break
 			}
-			overfull := at + BufConfig[i] - int(d.pktBufs[k].Size)
-			var b buffer.View
-			if overfull > 0 {
-				// -> all following views will be [] and later capped
-				b = buffer.View(d.pktBufs[k].Pkt[at:d.pktBufs[k].Size])
-			} else {
-				b = buffer.View(d.pktBufs[k].Pkt[at : at+BufConfig[i]])
-			}
-			at += len(b)
-			d.views[k][i] = b
+			d.views[k][i] = buffer.NewView(bufConfig[i])
 		}
 	}
 }
@@ -103,15 +78,18 @@ func (d *rxBatchDispatcher) initViews(bufConfig []int) {
 // rxBatchDispatcher reads up to BatchSize packets at a time from the
 // ixy device and dispatches it.
 func (d *rxBatchDispatcher) dispatch() (bool, *tcpip.Error) {
+	d.allocateViews(BufConfig)
+
 	// read packets and put them into the views
 	nMsgs, err := d.ixyBlockingRead(d.rxQueue, d.pktBufs)
-	defer d.freePktBufs(nMsgs)
 	if err != nil {
+		// drop packets on error but handle nothing else
+		for i := 0; i < nMsgs; i++ {
+			driver.PktBufFree(d.pktBufs[i])
+		}
 		return false, err
 	}
-	// PktBufs and views are cleaned when all the packets are processed (or this function unexpectedly stops)
-	d.initViews(BufConfig)
-	// Process each of received packets.
+
 	for k := 0; k < nMsgs; k++ {
 		n := int(d.pktBufs[k].Size)
 		if n <= d.e.hdrSize {
@@ -144,21 +122,41 @@ func (d *rxBatchDispatcher) dispatch() (bool, *tcpip.Error) {
 		vv := buffer.NewVectorisedView(int(n), d.views[k][:used])
 		vv.TrimFront(d.e.hdrSize)
 		d.e.dispatcher.DeliverNetworkPacket(d.e, remote, local, p, vv)
+
+		// Prepare e.views for another packet: release used views.
+		for i := 0; i < used; i++ {
+			d.views[k][i] = nil
+		}
+		// Free the pktBuf
+		driver.PktBufFree(d.pktBufs[k])
 	}
 
 	return true, nil
 }
 
 // reads from an rx queue of the ixy device of the associated endpoint
+// and copies these contents into views
 // blocks until packets are read
-// use this with a reasonable bufs size, e.g. 1<<5 or larger (1<<8 performs best)
+// use this with a reasonable bufs size, e.g. 1<<5 or larger (1<<8 performs best for the driver)
 func (d *rxBatchDispatcher) ixyBlockingRead(queueID uint16, bufs []*driver.PktBuf) (int, *tcpip.Error) {
 	read := 0
+	// fetch a batch of packets
 	for read == 0 {
 		rec, err := d.e.dev.RxBatch(queueID, bufs)
 		read += int(rec)
 		if err != nil {
 			return read, tcpip.ErrClosedQueue
+		}
+	}
+	// copy the data into the views
+	for k := 0; k < read; k++ {
+		c := 0
+		for i := 0; ; i++ {
+			nCpy := copy(d.views[k][i], bufs[k].Pkt[c:bufs[k].Size])
+			if nCpy <= len(d.views[k][i]) {
+				break
+			}
+			c += nCpy
 		}
 	}
 	return read, nil

@@ -185,7 +185,7 @@ func main() {
 	}
 
 	if *verbose {
-		fmt.Printf("Set up ixy-based NIC and added ARP and IP capabilities.\n")
+		fmt.Println("Set up ixy-based NIC and added ARP and IP capabilities.")
 	}
 
 	// Add default route.
@@ -199,7 +199,7 @@ func main() {
 	})
 
 	if *verbose {
-		fmt.Printf("Added default entry to the routing table.\n")
+		fmt.Println("Added default entry to the routing table.")
 	}
 
 	// Create TCP endpoint, bind it, then start listening.
@@ -220,7 +220,7 @@ func main() {
 	}
 
 	if *verbose {
-		fmt.Printf("Created, bound and started listening on TCP enpoint.\n")
+		fmt.Println("Created, bound and started listening on TCP enpoint.")
 	}
 
 	// Wait for connections to appear.
@@ -229,7 +229,7 @@ func main() {
 	defer wq.EventUnregister(&waitEntry)
 
 	if *verbose {
-		fmt.Printf("Ready to answer requests.\n")
+		fmt.Println("Ready to answer requests.")
 	}
 
 	for {
@@ -241,6 +241,10 @@ func main() {
 			}
 
 			log.Fatal("Accept() failed:", err)
+		}
+
+		if *verbose {
+			fmt.Println("Accepted new incoming TCP connection, starting echo.")
 		}
 
 		go echo(wq, n)
