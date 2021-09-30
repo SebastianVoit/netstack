@@ -120,8 +120,8 @@ type endpoint struct {
 	// gsoMaxSize is the maximum GSO packet size. It is zero if GSO is
 	// disabled.
 	// GSO = generic segmentation offload. ixgbe has TSO but ixy.go doesn't implement it
-	// -> ignore for now and maybe implement later
-	//gsoMaxSize uint32
+	// ixy.go currently does not implement GSO, always set so zero
+	gsoMaxSize uint32
 }
 
 // Most likely only allocate one endpoint/queue -> don't configure the number of queues but what queue we use (solves route <-> queue matching)
@@ -163,8 +163,8 @@ type Options struct {
 	// GSOMaxSize is the maximum GSO packet size. It is zero if GSO is
 	// disabled.
 	// GSO = generic segmentation offload. ixgbe has TSO but ixy.go doesn't implement it
-	// -> ignore for now and maybe implement later
-	//GSOMaxSize uint32
+	// ixy.go currently does not implement GSO, always set so zero
+	GSOMaxSize uint32
 
 	// TXChecksumOffload if true, indicates that this endpoints capability
 	// set should include CapabilityTXChecksumOffload.
@@ -231,6 +231,7 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 		addr:       opts.Address,
 		hdrSize:    hdrSize,
 		qMap:       make(map[tcpip.Address]uint16),
+		gsoMaxSize: 0,
 	}
 	// if the number of txBuffers is not specified, use 2048
 	if e.txEntries == 0 {
@@ -450,11 +451,10 @@ func (e *endpoint) dispatchLoop(inboundDispatcher linkDispatcher) *tcpip.Error {
 	}
 }
 
-// currently not supported
 // GSOMaxSize returns the maximum GSO packet size.
-/*func (e *endpoint) GSOMaxSize() uint32 {
+func (e *endpoint) GSOMaxSize() uint32 {
 	return e.gsoMaxSize
-}*/
+}
 
 // InjectableEndpoint is an injectable ixy-based endpoint. The endpoint writes
 // to the ixy device, but does not read from it. All reads come from injected packets.

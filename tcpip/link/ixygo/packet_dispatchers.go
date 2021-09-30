@@ -93,6 +93,9 @@ func (d *rxBatchDispatcher) dispatch() (bool, *tcpip.Error) {
 	for k := 0; k < nMsgs; k++ {
 		n := int(d.pktBufs[k].Size)
 		if n <= d.e.hdrSize {
+			for i := k; i < nMsgs; i++ {
+				driver.PktBufFree(d.pktBufs[i])
+			}
 			return false, nil
 		}
 
@@ -114,6 +117,9 @@ func (d *rxBatchDispatcher) dispatch() (bool, *tcpip.Error) {
 			case header.IPv6Version:
 				p = header.IPv6ProtocolNumber
 			default:
+				for i := k; i < nMsgs; i++ {
+					driver.PktBufFree(d.pktBufs[i])
+				}
 				return true, nil
 			}
 		}
@@ -148,7 +154,12 @@ func (d *rxBatchDispatcher) ixyBlockingRead(queueID uint16, bufs []*driver.PktBu
 			return read, tcpip.ErrClosedQueue
 		}
 	}
-	// copy the data into the views
+	// from nic.go, DeliverNetworkPacket():
+	// "Note that the ownership of the slice backing vv is retained by the caller.
+	// This rule applies only to the slice itself, not to the items of the slice;
+	// the ownership of the items is not retained by the caller."
+	// -> copy the data into the views since we need to have control over the
+	//	backing memory
 	for k := 0; k < read; k++ {
 		c := 0
 		for i := 0; ; i++ {

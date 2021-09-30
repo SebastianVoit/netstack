@@ -161,6 +161,7 @@ func main() {
 		MTU:            mtu,
 		EthernetHeader: true,
 		Address:        tcpip.LinkAddress(maddr),
+		GSOMaxSize:     0, // ignored, always set to zero as ixy.go doesn't support GSO
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -220,7 +221,7 @@ func main() {
 	}
 
 	if *verbose {
-		fmt.Println("Created, bound and started listening on TCP enpoint.")
+		fmt.Println("Created, bound and started listening on TCP endpoint.")
 	}
 
 	// Wait for connections to appear.
