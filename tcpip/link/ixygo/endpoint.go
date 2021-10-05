@@ -192,8 +192,9 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 	*/
 
 	caps := stack.LinkEndpointCapabilities(0)
-	caps |= stack.CapabilityRXChecksumOffload
-	caps |= stack.CapabilityTXChecksumOffload
+	// ixy.go does not support offloading currently (to be implemented in ixgbe.go)
+	// caps |= stack.CapabilityRXChecksumOffload
+	// caps |= stack.CapabilityTXChecksumOffload
 
 	hdrSize := 0
 	if opts.EthernetHeader {

@@ -162,11 +162,8 @@ func (d *rxBatchDispatcher) ixyBlockingRead(queueID uint16, bufs []*driver.PktBu
 	//	backing memory
 	for k := 0; k < read; k++ {
 		c := 0
-		for i := 0; ; i++ {
+		for i := 0; c < int(bufs[k].Size); i++ {
 			nCpy := copy(d.views[k][i], bufs[k].Pkt[c:bufs[k].Size])
-			if nCpy <= len(d.views[k][i]) {
-				break
-			}
 			c += nCpy
 		}
 	}
