@@ -452,7 +452,7 @@ func (e *endpoint) sendTx(queueID uint16) *tcpip.Error {
 			numTx, _ = e.dev.TxBatch(queueID, tb.bufs[:tb.filled])
 		}
 		// re-queue all elements that have not been sent out and start the timer
-		tb.filled = copy(tb.bufs[:], tb.bufs[numTx:])
+		tb.filled = copy(tb.bufs[:], tb.bufs[numTx:tb.filled])
 		e.setTxTimer(queueID)
 	}
 	return nil
