@@ -162,6 +162,7 @@ func main() {
 		EthernetHeader: true,
 		Address:        tcpip.LinkAddress(maddr),
 		GSOMaxSize:     0, // ignored, always set to zero as ixy.go doesn't support GSO
+		DropTx:         false,
 	})
 	if err != nil {
 		log.Fatal(err)

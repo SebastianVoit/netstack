@@ -122,9 +122,10 @@ type endpoint struct {
 	// GSO = generic segmentation offload. ixgbe has TSO but ixy.go doesn't implement it
 	// ixy.go currently does not implement GSO, always set so zero
 	gsoMaxSize uint32
-}
 
-// Most likely only allocate one endpoint/queue -> don't configure the number of queues but what queue we use (solves route <-> queue matching)
+	// dropTX controls TX behaviour in case of high load
+	dropTx bool
+}
 
 // Options to configure ixy device
 type Options struct {
@@ -165,6 +166,11 @@ type Options struct {
 	// GSO = generic segmentation offload. ixgbe has TSO but ixy.go doesn't implement it
 	// ixy.go currently does not implement GSO, always set so zero
 	GSOMaxSize uint32
+
+	// DropTx controls RX behaviour:
+	// false: every packet will be sent out -> can accumulate latency in case of high loads
+	// true: drop packets that can't be sent out immediately
+	DropTx bool
 
 	// TXChecksumOffload if true, indicates that this endpoints capability
 	// set should include CapabilityTXChecksumOffload.
@@ -233,6 +239,7 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 		hdrSize:    hdrSize,
 		qMap:       make(map[tcpip.Address]uint16),
 		gsoMaxSize: 0,
+		dropTx:     opts.DropTx,
 	}
 	// if the number of txBuffers is not specified, use 2048
 	if e.txEntries == 0 {
@@ -360,8 +367,24 @@ func (e *endpoint) getQueueID(dest tcpip.Address) uint16 {
 	return queue
 }
 
+func (e *endpoint) setTxTimer(queueID uint16) {
+	tb := e.txBufs[queueID]
+	// check if timer can be stopped (= has not expired yet). False -> start new one. True -> reset
+	if !tb.timer.Stop() {
+		<-tb.timer.C
+		tb.timer = time.AfterFunc(tw, func() {
+			// acquire lock and send. Should this happen while the last packet is enqueued (and thus waits util the respective send is complete), filled is reset to 0 afterwards and sendTx() does nothing
+			e.txMempools[queueID].mu.Lock()
+			defer e.txMempools[queueID].mu.Unlock()
+			// may implement error handling in the future but since TxBatch doesn't return errors that's kinda pointless
+			e.sendTx(queueID)
+		})
+	} else {
+		tb.timer.Reset(tw)
+	}
+}
+
 // ixySend enqueues the packet represented by b1-3 in the queue denoted by queueID
-// currently: not being able to allocate a packet buffer returns an error -> constant memory pool full errors -> tcp doesn't work
 // how it's supposed to be: when attempting to call sendTx(), wait until the packet buffers are free again instead of instantly returning errors
 // (if necessary: busy wait, but don't block for the rest)
 func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
@@ -374,7 +397,6 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	// allocate a single packet
 	pbuf := driver.PktBufAlloc(e.txMempools[queueID].mempool) // -> trying to send a packet on a queue that doesn't exist fails here
 	if pbuf == nil {
-		// TODO: if full, handle here! (mempools constantly run out of space)
 		return tcpip.ErrNoBufferSpace
 	}
 	// copy the packet into the mempool. If the packet is longer then Pkt.Size, the rest is dropped
@@ -400,40 +422,38 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 		e.sendTx(queueID)
 		return nil
 	}
-
-	// check if timer can be stopped (= has not expired yet). False -> start new one. True -> reset
-	if !tb.timer.Stop() {
-		<-tb.timer.C
-		tb.timer = time.AfterFunc(tw, func() {
-			// acquire lock and send. Should this happen while the last packet is enqueued (and thus waits util the respective send is complete), filled is reset to 0 afterwards and sendTx() does nothing
-			e.txMempools[queueID].mu.Lock()
-			defer e.txMempools[queueID].mu.Unlock()
-			// may implement error handling in the future but since TxBatch doesn't return errors that's kinda pointless
-			e.sendTx(queueID)
-		})
-	} else {
-		tb.timer.Reset(tw)
-	}
+	// otherwise
+	e.setTxTimer(queueID)
 	return nil
 }
 
 // never call this without previously aquiring the corresponding mutex and releasing it afterwards
 func (e *endpoint) sendTx(queueID uint16) *tcpip.Error {
+	// TODO (maybe): pktBufs reusable?
 	// enqueue packet(s)
 	tb := e.txBufs[queueID]
 	if tb.filled == 0 {
 		return nil
 	}
-	numTx, err := e.dev.TxBatch(queueID, tb.bufs[:tb.filled])
-	// drop packets that didn't get sent first, then handle error
-	if numTx < uint32(tb.filled) {
-		for i := numTx; i < uint32(tb.filled); i++ {
-			driver.PktBufFree(tb.bufs[i])
+	// TxBatch never returns an error
+	numTx, _ := e.dev.TxBatch(queueID, tb.bufs[:tb.filled])
+	// dropTX == true: drop packets that didn't get sent
+	if e.dropTx {
+		if numTx < uint32(tb.filled) {
+			for i := numTx; i < uint32(tb.filled); i++ {
+				driver.PktBufFree(tb.bufs[i])
+			}
 		}
-	}
-	tb.filled = 0
-	if err != nil {
-		return tcpip.ErrClosedQueue
+		tb.filled = 0
+	} else {
+		// dropTX == false: wait for TX to send all packets out
+		// busy wait as long as it is a full TxBatch
+		for tb.filled-int(numTx) == len(tb.bufs) {
+			numTx, _ = e.dev.TxBatch(queueID, tb.bufs[:tb.filled])
+		}
+		// re-queue all elements that have not been sent out and start the timer
+		tb.filled = copy(tb.bufs[:], tb.bufs[numTx:])
+		e.setTxTimer(queueID)
 	}
 	return nil
 }
