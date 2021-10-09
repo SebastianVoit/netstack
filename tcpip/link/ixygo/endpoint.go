@@ -413,7 +413,7 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	tb.filled++
 
 	// check whether batchSize has been reached -> send
-	if tb.filled == len(tb.bufs) {
+	if tb.filled == BatchSize {
 		tb.timer.Stop()
 		e.sendTx(queueID)
 		return nil
