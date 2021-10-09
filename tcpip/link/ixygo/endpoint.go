@@ -371,7 +371,6 @@ func (e *endpoint) setTxTimer(queueID uint16) {
 	tb := e.txBufs[queueID]
 	// check if timer can be stopped (= has not expired yet). False -> start new one. True -> reset
 	if !tb.timer.Stop() {
-		<-tb.timer.C
 		tb.timer = time.AfterFunc(tw, func() {
 			// acquire lock and send. Should this happen while the last packet is enqueued (and thus waits util the respective send is complete), filled is reset to 0 afterwards and sendTx() does nothing
 			e.txMempools[queueID].mu.Lock()
@@ -415,10 +414,7 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 
 	// check whether batchSize has been reached -> send
 	if tb.filled == len(tb.bufs) {
-		// stop timer and drain channel
-		if !tb.timer.Stop() {
-			<-tb.timer.C
-		}
+		tb.timer.Stop()
 		e.sendTx(queueID)
 		return nil
 	}
@@ -448,12 +444,16 @@ func (e *endpoint) sendTx(queueID uint16) *tcpip.Error {
 	} else {
 		// dropTX == false: wait for TX to send all packets out
 		// busy wait as long as it is a full TxBatch
-		for tb.filled-int(numTx) == len(tb.bufs) {
+		for tb.filled-int(numTx) == BatchSize {
 			numTx, _ = e.dev.TxBatch(queueID, tb.bufs[:tb.filled])
 		}
-		// re-queue all elements that have not been sent out and start the timer
-		tb.filled = copy(tb.bufs[:], tb.bufs[numTx:tb.filled])
-		e.setTxTimer(queueID)
+		if numTx < uint32(tb.filled) {
+			// re-queue all elements that have not been sent out and start the timer
+			tb.filled = copy(tb.bufs[:], tb.bufs[numTx:tb.filled])
+			e.setTxTimer(queueID)
+			return nil
+		}
+		tb.filled = 0
 	}
 	return nil
 }
