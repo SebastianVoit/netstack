@@ -117,7 +117,7 @@ func main() {
 
 	// Create the stack with IP and TCP protocols, then add an ixy-based
 	// NIC and address.
-	s := stack.New([]string{ipv4.ProtocolName, ipv6.ProtocolName, arp.ProtocolName}, []string{tcp.ProtocolName}, stack.Options{})
+	s := stack.New([]string{ipv4.ProtocolName, ipv6.ProtocolName, arp.ProtocolName}, []string{udp.ProtocolName}, stack.Options{})
 
 	mtu := uint32(1500) // TODO: get max mtu from NIC?
 
