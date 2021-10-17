@@ -43,11 +43,11 @@ type rxBatchDispatcher struct {
 
 func newRxBatchDispatcher(rxQueue uint16, e *endpoint) (linkDispatcher, error) {
 	d := &rxBatchDispatcher{rxQueue: rxQueue, e: e}
-	d.views = make([][]buffer.View, BatchSize)
+	d.views = make([][]buffer.View, e.batchSize)
 	for i := range d.views {
 		d.views[i] = make([]buffer.View, len(BufConfig))
 	}
-	d.pktBufs = make([]*driver.PktBuf, BatchSize)
+	d.pktBufs = make([]*driver.PktBuf, e.batchSize)
 	return d, nil
 }
 

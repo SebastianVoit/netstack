@@ -45,7 +45,6 @@ import (
 	"github.com/SebastianVoit/netstack/tcpip/network/ipv4"
 	"github.com/SebastianVoit/netstack/tcpip/network/ipv6"
 	"github.com/SebastianVoit/netstack/tcpip/stack"
-	"github.com/SebastianVoit/netstack/tcpip/transport/tcp"
 	"github.com/SebastianVoit/netstack/tcpip/transport/udp"
 	"github.com/SebastianVoit/netstack/waiter"
 )

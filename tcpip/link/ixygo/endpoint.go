@@ -36,7 +36,7 @@ import (
 
 const (
 	// BatchSize defines the size of the rxBatches for the ixy device. 256 performs best
-	BatchSize = 256
+	bSize = 256
 	// t defines the amount of milliseconds after which the enqueued packets will be sent even if BatchSize hasn't been reached yet -> Magic Number
 	// DPDK supposedly uses 100 Microseconds, have to confirm
 	tw = 100 * time.Microsecond
@@ -125,6 +125,9 @@ type endpoint struct {
 
 	// dropTX controls TX behaviour in case of high load
 	dropTx bool
+
+	// batchSizes sets the batch size for the endpoint. This affects TX and RX
+	batchSize int
 }
 
 // Options to configure ixy device
@@ -172,6 +175,9 @@ type Options struct {
 	// true: drop packets that can't be sent out immediately
 	DropTx bool
 
+	// BatchSize controls the size of the RX and TX batches. Only use with powers of 2
+	BatchSize int
+
 	// TXChecksumOffload if true, indicates that this endpoints capability
 	// set should include CapabilityTXChecksumOffload.
 	// ixy.go uses this non-optionally -> ignored
@@ -218,10 +224,17 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 
 	// finish configuring and then create a new endpoint struct
 
+	var b int
+	if opts.BatchSize == 0 {
+		b = 256
+	} else {
+		b = opts.BatchSize
+	}
+
 	tbufs := make([]*txb, devStats.NumTxQueues)
 	for i := 0; i < len(tbufs); i++ {
 		tbufs[i] = &txb{
-			bufs:  make([]*driver.PktBuf, BatchSize),
+			bufs:  make([]*driver.PktBuf, b),
 			timer: time.NewTimer(0), // not running -> stop and drain as normal
 		}
 	}
@@ -240,6 +253,7 @@ func New(opts *Options) (tcpip.LinkEndpointID, error) {
 		qMap:       make(map[tcpip.Address]uint16),
 		gsoMaxSize: 0,
 		dropTx:     opts.DropTx,
+		batchSize:  b,
 	}
 	// if the number of txBuffers is not specified, use 2048
 	if e.txEntries == 0 {
@@ -413,7 +427,7 @@ func (e *endpoint) ixySend(queueID uint16, b1, b2, b3 []byte) *tcpip.Error {
 	tb.filled++
 
 	// check whether batchSize has been reached -> send
-	if tb.filled == BatchSize {
+	if tb.filled == e.batchSize {
 		tb.timer.Stop()
 		e.sendTx(queueID)
 		return nil
@@ -444,7 +458,7 @@ func (e *endpoint) sendTx(queueID uint16) *tcpip.Error {
 	} else {
 		// dropTX == false: wait for TX to send all packets out
 		// busy wait as long as it is a full TxBatch
-		for tb.filled-int(numTx) == BatchSize {
+		for tb.filled-int(numTx) == e.batchSize {
 			numTx, _ = e.dev.TxBatch(queueID, tb.bufs[:tb.filled])
 		}
 		if numTx < uint32(tb.filled) {

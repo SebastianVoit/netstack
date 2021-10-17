@@ -43,6 +43,7 @@ const (
 	txqs       = uint16(1)
 	proto      = 10
 	csumOffset = 48
+	batchSize  = 256
 	//gsoMSS     = 500
 )
 
@@ -106,7 +107,7 @@ func (c *context) cleanup(d *driver.IxyDummy) {
 
 // to call the closed func, we need an rx queue that can later return an error
 func initDummy(rxBufs uint32, rxQueues, txQueues uint16) *driver.IxyDummy {
-	// allocate BatchSize entries, we don't need more for testing
+	// allocate batchSize entries, we don't need more for testing
 	if rxQueues < 1 {
 		rxQueues = 1
 	}
@@ -272,15 +273,15 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 		RemoteLinkAddress: raddr,
 	}
 
-	bb := make([][]byte, BatchSize)
-	want := make([][]byte, BatchSize)
+	bb := make([][]byte, batchSize)
+	want := make([][]byte, batchSize)
 	writeErr := make(chan struct {
 		*tcpip.Error
 		uint32
-	}, BatchSize)
+	}, batchSize)
 	var wg sync.WaitGroup
 	// TODO: fix id in packet (e.g. payload or header? What do for 0 length payload?)
-	for i := uint32(0); i < BatchSize; i++ {
+	for i := uint32(0); i < batchSize; i++ {
 		wg.Add(1)
 		go func(id uint32, wg *sync.WaitGroup) {
 			defer wg.Done()
@@ -327,8 +328,8 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 	}
 
 	// Get Rec from dummy, then compare with what we wrote.
-	if len(dummy.Rec) < BatchSize {
-		t.Fatal("WriteBatch failed: received less then BatchSize packets.\nThis may occur if the batch timer expired before the next packet, sending an incomplete batch.")
+	if len(dummy.Rec) < batchSize {
+		t.Fatal("WriteBatch failed: received less then batchSize packets.\nThis may occur if the batch timer expired before the next packet, sending an incomplete batch.")
 	}
 	for i := 0; i < len(dummy.Rec); i++ {
 		bb[i] = make([]byte, mtu)
@@ -356,7 +357,7 @@ func testWriteBatch(t *testing.T, txqs uint16, eth bool, plen int) {
 		// TODO: check if this is this is the correct pId location
 		// should be because ethernet header is stripped beforehand and the id are the first 4B of what follows
 		pId := binary.BigEndian.Uint32(bb[i][:4])
-		if pId > BatchSize {
+		if pId > batchSize {
 			t.Fatalf("pId out of legal pId range. This occurs if it is read incorrectly.")
 		}
 		if !bytes.Equal(bb[i], want[pId]) {
