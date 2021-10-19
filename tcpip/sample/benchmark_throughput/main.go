@@ -556,7 +556,7 @@ func main() {
 			// Start the writer in its own goroutine.
 			writerCompletedCh := make(chan struct{})
 			go writer(writerCompletedCh, ep, tcpip.WriteOptions{})
-			readData(writerCompletedCh, false, &wq, ep, 1)
+			readData(writerCompletedCh, true, &wq, ep, 1)
 
 			if *verbose {
 				fmt.Println("Connection closed, shutting down.")
@@ -566,7 +566,7 @@ func main() {
 			// UDP client: send data
 			writerCompletedCh := make(chan struct{})
 			go writer(writerCompletedCh, ep, tcpip.WriteOptions{To: &remote})
-			readData(writerCompletedCh, false, &wq, ep, 5)
+			readData(writerCompletedCh, true, &wq, ep, 5)
 			ep.Close()
 		}
 	}
