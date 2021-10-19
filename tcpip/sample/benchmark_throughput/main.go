@@ -133,7 +133,7 @@ func readData(ch chan struct{}, noCheck bool, wq *waiter.Queue, ep tcpip.Endpoin
 				rec := binary.BigEndian.Uint64(v)
 				interval := (1 << lenience) - 1
 				if rec < uint64(expected)-uint64(interval) || rec > uint64(expected)+uint64(interval) {
-					log.Fatalf("Received %v, expected %v +- %v.", rec, expected, interval)
+					fmt.Printf("Received %v, expected %v +- %v.\n", rec, expected, interval)
 				}
 				expected++
 			}
@@ -155,16 +155,15 @@ func echo(wq *waiter.Queue, ep tcpip.Endpoint, tProto tcpip.TransportProtocolNum
 	defer wq.EventUnregister(&waitEntry)
 
 	var addr tcpip.FullAddress
-	f := func() *tcpip.FullAddress {
-		if tProto == tcp.ProtocolNumber {
-			return nil
-		} else {
-			return &addr
-		}
+	var to *tcpip.FullAddress
+	if tProto == tcp.ProtocolNumber {
+		to = nil
+	} else {
+		to = &addr
 	}
 
 	for {
-		v, _, err := ep.Read(f())
+		v, _, err := ep.Read(to)
 		if err != nil {
 			if err == tcpip.ErrWouldBlock {
 				<-notifyCh
@@ -175,7 +174,7 @@ func echo(wq *waiter.Queue, ep tcpip.Endpoint, tProto tcpip.TransportProtocolNum
 			}
 			return
 		}
-		ep.Write(tcpip.SlicePayload(v), tcpip.WriteOptions{To: f()})
+		ep.Write(tcpip.SlicePayload(v), tcpip.WriteOptions{To: to})
 	}
 }
 
@@ -342,7 +341,7 @@ func main() {
 	// NIC and address. Also add a stats counter to the stack.
 	//stats := tcpip.Stats{}
 	var netStr []string
-	if server {
+	if server && tProto == tcp.ProtocolNumber {
 		netStr = []string{ipv4.ProtocolName, ipv6.ProtocolName, arp.ProtocolName}
 	} else {
 		netStr = []string{ipv4.ProtocolName, ipv6.ProtocolName}
@@ -426,7 +425,7 @@ func main() {
 	if err := s.AddAddress(nId, proto, addr); err != nil {
 		log.Fatal(err)
 	}
-	if server {
+	if server && tProto == tcp.ProtocolNumber {
 		if err := s.AddAddress(nId, arp.ProtocolNumber, arp.ProtocolAddress); err != nil {
 			log.Fatal(err)
 		}
