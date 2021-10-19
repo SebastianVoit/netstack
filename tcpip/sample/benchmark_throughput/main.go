@@ -60,7 +60,7 @@ var verbose = flag.Bool("v", false, "the verbose flag enables additional feedbac
 var numRx = flag.Uint64("numRx", 1, "number of RX queues")
 var numTx = flag.Uint64("numTx", 1, "number of TX queues")
 var bSize = flag.Int("b", 256, "Batch Size for the driver")
-var tunDev = flag.String("tun", "", "Empty string uses the ixy link endpoint, non-empty string specifies the tun device to use instead")
+var tunDev = flag.String("tun", "", "Empty string uses the ixy link endpoint, non-empty string specifies the tun device to use instead. Ignores the pci address")
 var tap = flag.Bool("tap", false, "use tap istead of tun. Doesn't do anything for an ixy endpoint")
 
 type dirStats struct {
@@ -76,9 +76,9 @@ func diffMpps(pktsNew, pktsOld uint64, nanos time.Duration) float64 {
 	return float64(pktsNew-pktsOld) / 1000000.0 / (float64(nanos) / 1000000000.0)
 }
 
-func diffMbit(statsOld, stats *dirStats, nanos time.Duration) uint32 {
+func diffMbit(statsOld, stats *dirStats, nanos time.Duration) float64 {
 	// take stuff on the wire into account, i.e., the preamble, SFD and IFG (20 bytes)
-	return uint32((float64(stats.bytes-statsOld.bytes)/1000000.0/(float64(nanos)/1000000000.0))*8 + diffMpps(stats.packets, statsOld.packets, nanos))
+	return (float64(stats.bytes-statsOld.bytes)/1000000.0/(float64(nanos)/1000000000.0))*8 + diffMpps(stats.packets, statsOld.packets, nanos)
 }
 
 func printStatsDiff(statsOld, stats *nicRTStats, nanos time.Duration) {
@@ -89,8 +89,8 @@ func printStatsDiff(statsOld, stats *nicRTStats, nanos time.Duration) {
 		devString = fmt.Sprintf("ixy|%v", flag.Arg(2))
 	}
 	fmt.Printf("Stack.NIC stats:\n")
-	fmt.Printf("[%v] RX: %v Mbit/s %.2f Mpps\n", devString, diffMbit(statsOld.rx, stats.rx, nanos), diffMpps(stats.rx.packets, statsOld.rx.packets, nanos))
-	fmt.Printf("[%v] TX: %v Mbit/s %.2f Mpps\n", devString, diffMbit(statsOld.tx, stats.tx, nanos), diffMpps(stats.tx.packets, statsOld.tx.packets, nanos))
+	fmt.Printf("[%v] RX: %.2f Mbit/s %.2f Mpps\n", devString, diffMbit(statsOld.rx, stats.rx, nanos), diffMpps(stats.rx.packets, statsOld.rx.packets, nanos))
+	fmt.Printf("[%v] TX: %.2f Mbit/s %.2f Mpps\n", devString, diffMbit(statsOld.tx, stats.tx, nanos), diffMpps(stats.tx.packets, statsOld.tx.packets, nanos))
 }
 
 func loadNICStats(stats stack.NICStats) *nicRTStats {
@@ -106,31 +106,82 @@ func loadNICStats(stats stack.NICStats) *nicRTStats {
 	}
 }
 
+func readData(ch chan struct{}, noCheck bool, wq *waiter.Queue, ep tcpip.Endpoint, lenience uint) {
+	// Read data and check whether it matches the sent data
+	waitEntry, notifyCh := waiter.NewChannelEntry(nil)
+	wq.EventRegister(&waitEntry, waiter.EventIn)
+	defer wq.EventUnregister(&waitEntry)
+	expected := 0
+	select {
+	case <-ch:
+		return
+	default:
+		for {
+			v, _, err := ep.Read(nil)
+			if err != nil {
+				if err == tcpip.ErrClosedForReceive {
+					break
+				}
+				if err == tcpip.ErrWouldBlock {
+					<-notifyCh
+					continue
+				}
+				log.Fatal("Read() failed:", err)
+			}
+			// Check received data: content starts with 0 and counts upward
+			if !noCheck {
+				rec := binary.BigEndian.Uint64(v)
+				interval := (1 << lenience) - 1
+				if rec < uint64(expected)-uint64(interval) || rec > uint64(expected)+uint64(interval) {
+					log.Fatalf("Received %v, expected %v +- %v.", rec, expected, interval)
+				}
+				expected++
+			}
+		}
+	}
+}
+
 // echo reads from the tcp endpoint and echoes the received messages
-func echo(wq *waiter.Queue, ep tcpip.Endpoint) {
-	defer ep.Close()
+func echo(wq *waiter.Queue, ep tcpip.Endpoint, tProto tcpip.TransportProtocolNumber) {
+	if tProto == tcp.ProtocolNumber {
+		defer ep.Close()
+	} else if tProto != udp.ProtocolNumber {
+		log.Fatalf("Calling echo with invalid Transport Protocol: %v", tProto)
+	}
 
 	// Create wait queue entry that notifies a channel.
 	waitEntry, notifyCh := waiter.NewChannelEntry(nil)
 	wq.EventRegister(&waitEntry, waiter.EventIn)
 	defer wq.EventUnregister(&waitEntry)
 
+	var addr tcpip.FullAddress
+	f := func() *tcpip.FullAddress {
+		if tProto == tcp.ProtocolNumber {
+			return nil
+		} else {
+			return &addr
+		}
+	}
+
 	for {
-		v, _, err := ep.Read(nil)
+		v, _, err := ep.Read(f())
 		if err != nil {
 			if err == tcpip.ErrWouldBlock {
 				<-notifyCh
 				continue
 			}
+			if tProto == udp.ProtocolNumber {
+				log.Fatal("Read error: ", err)
+			}
 			return
 		}
-		ep.Write(tcpip.SlicePayload(v), tcpip.WriteOptions{})
+		ep.Write(tcpip.SlicePayload(v), tcpip.WriteOptions{To: f()})
 	}
 }
 
 // writer reads from standard input and writes to the endpoint until standard
 // input is closed. It signals that it's done by closing the provided channel.
-func writer(ch chan struct{}, ep tcpip.Endpoint) {
+func writer(ch chan struct{}, ep tcpip.Endpoint, writeOpts tcpip.WriteOptions) {
 	defer func() {
 		ep.Shutdown(tcpip.ShutdownWrite)
 		close(ch)
@@ -144,8 +195,9 @@ func writer(ch chan struct{}, ep tcpip.Endpoint) {
 		val++
 		v.CapLength(8)
 		for len(v) > 0 {
-			n, _, err := ep.Write(tcpip.SlicePayload(v), tcpip.WriteOptions{})
-			if err != nil {
+			n, _, err := ep.Write(tcpip.SlicePayload(v), writeOpts)
+			// we can busy wait as sending packets is the only thing we want to do anyways
+			if err != nil && err != tcpip.ErrWouldBlock {
 				fmt.Println("Write failed:", err)
 				return
 			}
@@ -156,7 +208,7 @@ func writer(ch chan struct{}, ep tcpip.Endpoint) {
 
 func main() {
 	flag.Parse()
-	if len(flag.Args()) <= 5 {
+	if len(flag.Args()) < 5 {
 		log.Fatal("Usage: ", os.Args[0], " <srv|clnt> <tcp|udp> <pci-address> <local-address> <local-port> <remote-address> <remote-port>\n"+
 			"In server mode, the remote address and port will be ignored and do not have to be provided.")
 	}
@@ -178,15 +230,16 @@ func main() {
 		tProtoName = tcp.ProtocolName
 	} else if flag.Arg(1) == "udp" {
 		tProto = udp.ProtocolNumber
+		tProtoName = udp.ProtocolName
 	} else {
 		log.Fatal("Did not provide a valid argument for the transport protocol.\nValid arguments: \"tcp\", \"udp\".")
 	}
 
 	if *verbose {
 		if server {
-			fmt.Println("Creating a" + tProtoName + "echo server.")
+			fmt.Printf("Creating a %v echo server.\n", tProtoName)
 		} else {
-			fmt.Println("Creating a client to connecto to a" + tProtoName + "echo server.")
+			fmt.Printf("Creating a client to connect to a %v echo server.\n", tProtoName)
 		}
 	}
 
@@ -227,7 +280,7 @@ func main() {
 		log.Fatalf("Bad MAC address: %v", *mac)
 	}
 
-	// Parse the IP address. Support both ipv4 and ipv6.
+	// Parse the IP address. Support both ipv4 and ipv6.creatcreat
 	parsedAddr := net.ParseIP(addrName)
 	if parsedAddr == nil {
 		log.Fatalf("Bad IP address: %v", addrName)
@@ -288,12 +341,18 @@ func main() {
 	// Create the stack with IP and TCP protocols, then add an ixy-based
 	// NIC and address. Also add a stats counter to the stack.
 	//stats := tcpip.Stats{}
-	s := stack.New([]string{ipv4.ProtocolName, ipv6.ProtocolName, arp.ProtocolName}, []string{tProtoName}, stack.Options{ /*Stats: stats*/ })
+	var netStr []string
+	if server {
+		netStr = []string{ipv4.ProtocolName, ipv6.ProtocolName, arp.ProtocolName}
+	} else {
+		netStr = []string{ipv4.ProtocolName, ipv6.ProtocolName}
+	}
+	s := stack.New(netStr, []string{tProtoName}, stack.Options{ /*Stats: stats*/ })
 
 	mtu := uint32(1500)
 
 	var linkID tcpip.LinkEndpointID
-	if *tunDev != "" {
+	if *tunDev == "" {
 		// Initialize ixgbe device
 		var dev driver.IxyInterface
 		func() {
@@ -328,7 +387,7 @@ func main() {
 			log.Fatal(err)
 		}
 	} else {
-		// fdbased enpoint using a tun device
+		// fdbased enpoint using a tun/tap device
 		mtu, err := rawfile.GetMTU(*tunDev)
 		if err != nil {
 			log.Fatal(err)
@@ -432,11 +491,10 @@ func main() {
 	}
 
 	/*
-	 *  TODO: Print stats
-	 *  prints stats every 1s
+	 *  Print stats:
+	 *  prints every 1s
 	 *  same format as in the fwd example for the ixy driver
 	 */
-	// TODO: see if stats work correctly that way: nic.Stats.(T|R)x.(Packets|Bytes) are of type *tcpip.StatCounter
 	nicStatsInfo := s.NICInfo()[nId].Stats
 	stats := loadNICStats(nicStatsInfo)
 	var statsOld *nicRTStats
@@ -445,7 +503,7 @@ func main() {
 		for {
 			t := time.NewTimer(time.Second)
 			currTime := <-t.C
-			// nicStatsInfo = s.NICInfo()[nId].Stats // need to refresh?
+			nicStatsInfo = s.NICInfo()[nId].Stats
 			statsOld = stats
 			stats = loadNICStats(nicStatsInfo)
 			go printStatsDiff(statsOld, stats, currTime.Sub(lastStatsPrinted))
@@ -453,15 +511,12 @@ func main() {
 		}
 	}()
 
-	// Wait for connections to appear.
-	waitEntry, notifyCh := waiter.NewChannelEntry(nil)
-	wq.EventRegister(&waitEntry, waiter.EventIn)
-
 	if server {
-		// TODO: touch packet content?
-		// Probably not necessary since the packet is copied for RX and TX
 		if tProto == tcp.ProtocolNumber {
 			// tcp server: accept incoming connections and echo data
+			// Wait for connections to appear.
+			waitEntry, notifyCh := waiter.NewChannelEntry(nil)
+			wq.EventRegister(&waitEntry, waiter.EventIn)
 			defer wq.EventUnregister(&waitEntry)
 			for {
 				n, wq, err := ep.Accept()
@@ -472,30 +527,20 @@ func main() {
 					}
 					log.Fatal("Accept() failed:", err)
 				}
-				go echo(wq, n)
+				go echo(wq, n, tProto)
 			}
 
 		} else {
 			// udp: echo incoming packets
-			defer wq.EventUnregister(&waitEntry)
-			for {
-				var addr tcpip.FullAddress
-				v, _, err := ep.Read(&addr)
-				if err != nil {
-					if err == tcpip.ErrWouldBlock {
-						<-notifyCh
-						continue
-					}
-					log.Fatal("Read error: ", err)
-				}
-				ep.Write(tcpip.SlicePayload(v), tcpip.WriteOptions{To: &addr})
-			}
+			echo(&wq, ep, tProto)
 		}
 
 	} else {
-		// TODO: what to send exactly?
+		// Client: (connect &) send
 		if tProto == tcp.ProtocolNumber {
-			// TCP client: connect & send data
+			waitEntry, notifyCh := waiter.NewChannelEntry(nil)
+			wq.EventRegister(&waitEntry, waiter.EventOut)
+			// TCP client: connect
 			terr := ep.Connect(remote)
 			if terr == tcpip.ErrConnectStarted {
 				fmt.Println("Connect is pending...")
@@ -507,39 +552,13 @@ func main() {
 			if terr != nil {
 				log.Fatal("Unable to connect: ", terr)
 			}
-
 			fmt.Println("Connected")
 
 			// Start the writer in its own goroutine.
 			writerCompletedCh := make(chan struct{})
-			go writer(writerCompletedCh, ep)
+			go writer(writerCompletedCh, ep, tcpip.WriteOptions{})
+			readData(writerCompletedCh, false, &wq, ep, 1)
 
-			// Read data and check whether it matches the sent data
-			wq.EventRegister(&waitEntry, waiter.EventIn)
-			expected := 0
-			for {
-				v, _, err := ep.Read(nil)
-				if err != nil {
-					if err == tcpip.ErrClosedForReceive {
-						break
-					}
-					if err == tcpip.ErrWouldBlock {
-						<-notifyCh
-						continue
-					}
-					log.Fatal("Read() failed:", err)
-				}
-				// Check received data: content starts with 0 and counts upward
-				rec := binary.BigEndian.Uint64(v)
-				if rec != uint64(expected) {
-					log.Fatalf("Received %v, expected %v. TCP should not deliver out of order.", rec, expected)
-				}
-				expected++
-			}
-			wq.EventUnregister(&waitEntry)
-
-			// The reader has completed. Now wait for the writer as well.
-			<-writerCompletedCh
 			if *verbose {
 				fmt.Println("Connection closed, shutting down.")
 			}
@@ -547,36 +566,8 @@ func main() {
 		} else {
 			// UDP client: send data
 			writerCompletedCh := make(chan struct{})
-			go writer(writerCompletedCh, ep)
-
-			// Read data and check whether it matches the sent data
-			wq.EventRegister(&waitEntry, waiter.EventIn)
-			expected := 0
-			for {
-				v, _, err := ep.Read(nil)
-				if err != nil {
-					if err == tcpip.ErrClosedForReceive {
-						break
-					}
-					if err == tcpip.ErrWouldBlock {
-						<-notifyCh
-						continue
-					}
-					log.Fatal("Read() failed:", err)
-				}
-				// Check received data: content starts with 0 and counts upward
-				// as UDP could be out of order, check if "close enough"
-				rec := binary.BigEndian.Uint64(v)
-				interval := 1 << 4
-				if rec < uint64(expected)-uint64(interval) || rec > uint64(expected)+uint64(interval) {
-					log.Fatalf("Received %v, expected %v +- %v. UDP should not be that out of order.", rec, expected, interval)
-				}
-				expected++
-			}
-			wq.EventUnregister(&waitEntry)
-
-			// The reader has completed. Now wait for the writer as well.
-			<-writerCompletedCh
+			go writer(writerCompletedCh, ep, tcpip.WriteOptions{To: &remote})
+			readData(writerCompletedCh, false, &wq, ep, 5)
 			ep.Close()
 		}
 	}
