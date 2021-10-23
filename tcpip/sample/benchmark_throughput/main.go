@@ -78,7 +78,7 @@ func diffMpps(pktsNew, pktsOld uint64, nanos time.Duration) float64 {
 
 func diffMbit(statsOld, stats *dirStats, nanos time.Duration) float64 {
 	// take stuff on the wire into account, i.e., the preamble, SFD and IFG (20 bytes)
-	return (float64(stats.bytes-statsOld.bytes)/1000000.0/(float64(nanos)/1000000000.0))*8 + diffMpps(stats.packets, statsOld.packets, nanos)
+	return float64(stats.bytes-statsOld.bytes)/1000000.0/(float64(nanos)/1000000000.0)*8 + diffMpps(stats.packets, statsOld.packets, nanos)*20*8
 }
 
 func printStatsDiff(statsOld, stats *nicRTStats, nanos time.Duration) {
