@@ -41,6 +41,8 @@ import (
 )
 
 // var verbose = flag.Bool("v", false, "the verbose flag enables additional feedback during program operation including packet sniffing")
+var paylSize = flag.Int("ps", 1, "Payload size for the packets send by the client as a multiple of 8B. Max MSS, <=0 -> MSS.")
+var iFace = flag.String("iface", "", "The interface whose mtu should be used for capping mss.")
 
 type dirStats struct {
 	bytes   uint64
@@ -93,11 +95,16 @@ func diffMbit(statsOld, stats *dirStats, nanos time.Duration, ipVer int, tProto 
 	return (float64(stats.bytes-statsOld.bytes)/1000000.0/(float64(nanos)/1000000000.0))*8 + diffMpps(stats.packets, statsOld.packets, nanos)*(20+float64(hdrB))*8
 }
 
+func diffMbitPl(statsOld, stats *dirStats, nanos time.Duration) float64 {
+	// only take actually transported data into account
+	return float64(stats.bytes-statsOld.bytes) / 1000000.0 / (float64(nanos) / 1000000000.0) * 8
+}
+
 func printStatsDiff(statsOld, stats *l4Stats, nanos time.Duration, ipVer int, tProto string) {
 	devString := "OS stack"
 	fmt.Printf("L4 stats + minimum header sizes:\n")
-	fmt.Printf("[%v] RX: %.2f Mbit/s %.2f Mpps\n", devString, diffMbit(statsOld.rx, stats.rx, nanos, ipVer, tProto), diffMpps(stats.rx.packets, statsOld.rx.packets, nanos))
-	fmt.Printf("[%v] TX: %.2f Mbit/s %.2f Mpps\n", devString, diffMbit(statsOld.tx, stats.tx, nanos, ipVer, tProto), diffMpps(stats.tx.packets, statsOld.tx.packets, nanos))
+	fmt.Printf("[%v] RX: %.2f Mbit/s (total) %.2f Mbit/s (payload)  %.2f Mpps\n", devString, diffMbit(statsOld.rx, stats.rx, nanos, ipVer, tProto), diffMbitPl(statsOld.tx, stats.tx, nanos), diffMpps(stats.rx.packets, statsOld.rx.packets, nanos))
+	fmt.Printf("[%v] TX: %.2f Mbit/s (total) %.2f Mbit/s (payload)  %.2f Mpps\n", devString, diffMbit(statsOld.tx, stats.tx, nanos, ipVer, tProto), diffMbitPl(statsOld.tx, stats.tx, nanos), diffMpps(stats.tx.packets, statsOld.tx.packets, nanos))
 }
 
 func main() {
@@ -114,11 +121,7 @@ func main() {
 		log.Fatal("Did not provide a valid argument for server/client.\nValid arguments: \"s\", \"srv\", \"server\", \"c\", \"clnt\", \"client\".")
 	}
 	tProtoName := flag.Arg(1)
-	if tProtoName == "tcp" {
-
-	} else if tProtoName == "udp" {
-
-	} else {
+	if tProtoName != "tcp" && tProtoName != "udp" {
 		log.Fatal("Did not provide a valid argument for the transport protocol.\nValid arguments: \"tcp\", \"udp\".")
 	}
 
@@ -169,7 +172,29 @@ func main() {
 		}
 	}()
 
-	// TODO: one address is probably enough for server & client
+	mtu := 1500 // default of 1500
+
+	iFc, err := net.InterfaceByName(*iFace)
+	if err != nil {
+		fmt.Printf("Couldn't get interface by name, using default. Error: %v\n", err)
+	} else {
+		mtu = iFc.MTU
+	}
+	mss := mtu
+	if ipVer == 4 {
+		mss -= 20
+	} else {
+		mss -= 40
+	}
+	if tProtoName == "tcp" {
+		mss -= 20
+	} else {
+		mss -= 8
+	}
+	if *paylSize*8 > int(mss) || *paylSize <= 0 {
+		*paylSize = int((mss - mss%8) / 8) // paylSize has to be a multiple of 8
+	}
+
 	// also this is probably managable without implementing everything twice
 	var errSrc string
 	if server {
@@ -254,7 +279,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("%vnet.Dial() error: %v", errSrc, err)
 		}
-		b := make([]byte, 8)
+		b := make([]byte, 8*(*paylSize))
 
 		// fetch incoming packets
 		go func() {
@@ -272,7 +297,7 @@ func main() {
 		// flood packets out
 		sent := uint64(0)
 		for {
-			binary.BigEndian.PutUint64(b, sent)
+			binary.BigEndian.PutUint64(b, sent) // only set the first byte to keep non-sending computation low
 			n, werr := conn.Write(b)
 			if err != nil {
 				log.Fatalf("%vnet.Write() error: %v", errSrc, werr)

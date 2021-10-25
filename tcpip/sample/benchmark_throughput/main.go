@@ -62,6 +62,7 @@ var numTx = flag.Uint64("numTx", 1, "number of TX queues")
 var bSize = flag.Int("b", 256, "Batch Size for the driver")
 var tunDev = flag.String("tun", "", "Empty string uses the ixy link endpoint, non-empty string specifies the tun device to use instead. Ignores the pci address")
 var tap = flag.Bool("tap", false, "use tap istead of tun. Doesn't do anything for an ixy endpoint")
+var paylSize = flag.Int("ps", 1, "Payload size for the packets send by the client as a multiple of 8B. Max MSS, -1 -> MSS.")
 
 type dirStats struct {
 	packets uint64
@@ -81,6 +82,11 @@ func diffMbit(statsOld, stats *dirStats, nanos time.Duration) float64 {
 	return float64(stats.bytes-statsOld.bytes)/1000000.0/(float64(nanos)/1000000000.0)*8 + diffMpps(stats.packets, statsOld.packets, nanos)*20*8
 }
 
+func diffMbitPl(statsOld, stats *dirStats, nanos time.Duration) float64 {
+	// only take actually transported data into account
+	return float64(stats.bytes-statsOld.bytes) / 1000000.0 / (float64(nanos) / 1000000000.0) * 8
+}
+
 func printStatsDiff(statsOld, stats *nicRTStats, nanos time.Duration) {
 	var devString string
 	if *tunDev != "" {
@@ -89,8 +95,8 @@ func printStatsDiff(statsOld, stats *nicRTStats, nanos time.Duration) {
 		devString = fmt.Sprintf("ixy|%v", flag.Arg(2))
 	}
 	fmt.Printf("Stack.NIC stats:\n")
-	fmt.Printf("[%v] RX: %.2f Mbit/s %.2f Mpps\n", devString, diffMbit(statsOld.rx, stats.rx, nanos), diffMpps(stats.rx.packets, statsOld.rx.packets, nanos))
-	fmt.Printf("[%v] TX: %.2f Mbit/s %.2f Mpps\n", devString, diffMbit(statsOld.tx, stats.tx, nanos), diffMpps(stats.tx.packets, statsOld.tx.packets, nanos))
+	fmt.Printf("[%v] RX: %.2f Mbit/s (total) %.2f Mbit/s (payload) %.2f Mpps\n", devString, diffMbit(statsOld.rx, stats.rx, nanos), diffMbitPl(statsOld.tx, stats.tx, nanos), diffMpps(stats.rx.packets, statsOld.rx.packets, nanos))
+	fmt.Printf("[%v] TX: %.2f Mbit/s (total) %.2f Mbit/s (payload) %.2f Mpps\n", devString, diffMbit(statsOld.tx, stats.tx, nanos), diffMbitPl(statsOld.tx, stats.tx, nanos), diffMpps(stats.tx.packets, statsOld.tx.packets, nanos))
 }
 
 func loadNICStats(stats stack.NICStats) *nicRTStats {
@@ -189,8 +195,9 @@ func writer(ch chan struct{}, ep tcpip.Endpoint, writeOpts tcpip.WriteOptions) {
 	for {
 		// one could implement randomized contents here but I don't see any benefits
 		// keep the packet size small -> one
-		v := buffer.NewView(8)
-		binary.BigEndian.PutUint64(v, val)
+		pLen := *paylSize * 8
+		v := buffer.NewView(pLen)
+		binary.BigEndian.PutUint64(v, val) // only fill the first byte to minimize computation per packet
 		val++
 		v.CapLength(8)
 		for len(v) > 0 {
@@ -348,10 +355,12 @@ func main() {
 	}
 	s := stack.New(netStr, []string{tProtoName}, stack.Options{ /*Stats: stats*/ })
 
-	mtu := uint32(1500)
+	var mss uint32
 
 	var linkID tcpip.LinkEndpointID
 	if *tunDev == "" {
+		mtu := uint32(1500)
+		mss = mtu
 		// Initialize ixgbe device
 		var dev driver.IxyInterface
 		func() {
@@ -388,6 +397,7 @@ func main() {
 	} else {
 		// fdbased enpoint using a tun/tap device
 		mtu, err := rawfile.GetMTU(*tunDev)
+		mss = mtu
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -420,6 +430,23 @@ func main() {
 		if err := s.CreateNIC(nId, linkID); err != nil {
 			log.Fatal(err)
 		}
+	}
+
+	// calc mss
+	if addr == ipv4.ProtocolName {
+		mss -= 20
+	}
+	if addr == ipv6.ProtocolName {
+		mss -= 40
+	}
+	if tProto == tcp.ProtocolNumber {
+		mss -= 20
+	}
+	if tProto == udp.ProtocolNumber {
+		mss -= 8
+	}
+	if *paylSize*8 > int(mss) || *paylSize <= 0 {
+		*paylSize = int((mss - mss%8) / 8)
 	}
 
 	if err := s.AddAddress(nId, proto, addr); err != nil {
