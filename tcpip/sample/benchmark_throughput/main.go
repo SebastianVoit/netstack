@@ -447,6 +447,8 @@ func main() {
 	}
 	if *paylSize*8 > int(mss) || *paylSize <= 0 {
 		*paylSize = int((mss - mss%8) / 8)
+	} else if *paylSize%8 != 0 {
+		*paylSize -= *paylSize % 8
 	}
 	if *paylSize < 8 {
 		*paylSize = 8
