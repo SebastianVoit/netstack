@@ -41,7 +41,7 @@ import (
 )
 
 // var verbose = flag.Bool("v", false, "the verbose flag enables additional feedback during program operation including packet sniffing")
-var paylSize = flag.Int("ps", 1, "Payload size for the packets send by the client as a multiple of 8B. Max MSS, <=0 -> MSS.")
+var paylSize = flag.Int("ps", 8, "Payload size for the packets send by the client in B. Capped to MMS and multiple of 8. Min 8, max MSS, <=0 -> MSS.")
 var iFace = flag.String("iface", "", "The interface whose mtu should be used for capping mss.")
 
 type dirStats struct {
@@ -103,7 +103,7 @@ func diffMbitPl(statsOld, stats *dirStats, nanos time.Duration) float64 {
 func printStatsDiff(statsOld, stats *l4Stats, nanos time.Duration, ipVer int, tProto string) {
 	devString := "OS stack"
 	fmt.Printf("L4 stats + minimum header sizes:\n")
-	fmt.Printf("[%v] RX: %.2f Mbit/s (total) %.2f Mbit/s (payload)  %.2f Mpps\n", devString, diffMbit(statsOld.rx, stats.rx, nanos, ipVer, tProto), diffMbitPl(statsOld.tx, stats.tx, nanos), diffMpps(stats.rx.packets, statsOld.rx.packets, nanos))
+	fmt.Printf("[%v] RX: %.2f Mbit/s (total) %.2f Mbit/s (payload)  %.2f Mpps\n", devString, diffMbit(statsOld.rx, stats.rx, nanos, ipVer, tProto), diffMbitPl(statsOld.rx, stats.rx, nanos), diffMpps(stats.rx.packets, statsOld.rx.packets, nanos))
 	fmt.Printf("[%v] TX: %.2f Mbit/s (total) %.2f Mbit/s (payload)  %.2f Mpps\n", devString, diffMbit(statsOld.tx, stats.tx, nanos, ipVer, tProto), diffMbitPl(statsOld.tx, stats.tx, nanos), diffMpps(stats.tx.packets, statsOld.tx.packets, nanos))
 }
 
@@ -174,11 +174,13 @@ func main() {
 
 	mtu := 1500 // default of 1500
 
-	iFc, err := net.InterfaceByName(*iFace)
-	if err != nil {
-		fmt.Printf("Couldn't get interface by name, using default. Error: %v\n", err)
-	} else {
-		mtu = iFc.MTU
+	if *iFace != "" {
+		iFc, err := net.InterfaceByName(*iFace)
+		if err != nil {
+			fmt.Printf("Couldn't get interface by name, using default. Error: %v\n", err)
+		} else {
+			mtu = iFc.MTU
+		}
 	}
 	mss := mtu
 	if ipVer == 4 {
@@ -193,6 +195,9 @@ func main() {
 	}
 	if *paylSize*8 > int(mss) || *paylSize <= 0 {
 		*paylSize = int((mss - mss%8) / 8) // paylSize has to be a multiple of 8
+	}
+	if *paylSize < 8 {
+		*paylSize = 8
 	}
 
 	// also this is probably managable without implementing everything twice
@@ -256,13 +261,13 @@ func main() {
 				stats.Rx.Packets.Increment()
 				stats.Rx.Bytes.IncrementBy(uint64(n))
 				// echo
-				n, werr := conn.WriteTo(b[:n], remoteAddr)
+				m, werr := conn.WriteTo(b[:n], remoteAddr)
 				if werr != nil {
 					log.Fatalf("%vnet.WriteTo() error: %v", errSrc, werr)
 				}
 				// increment stats
 				stats.Tx.Packets.Increment()
-				stats.Tx.Bytes.IncrementBy(uint64(n))
+				stats.Tx.Bytes.IncrementBy(uint64(m))
 			}
 		}
 	} else {
@@ -280,30 +285,29 @@ func main() {
 			log.Fatalf("%vnet.Dial() error: %v", errSrc, err)
 		}
 		b := make([]byte, 8*(*paylSize))
+		rec := make([]byte, 2048)
 
 		// fetch incoming packets
 		go func() {
-			rec := make([]byte, 2048)
-			n, rerr := conn.Read(rec)
-			if rerr != nil {
-				log.Fatalf("%vnet.Read() error: %v", errSrc, rerr)
+			for {
+				n, rerr := conn.Read(rec)
+				if rerr != nil {
+					log.Fatalf("%vnet.Read() error: %v", errSrc, rerr)
+				}
+				stats.Rx.Packets.Increment()
+				stats.Rx.Bytes.IncrementBy(uint64(n))
 			}
-			if n != 8 {
-				fmt.Printf("%vSuspivious packet of wrong size: Should be %v Bytes, is %v.\nPacket:\n%v", errSrc, 8, n, rec)
-			}
-			stats.Rx.Packets.Increment()
-			stats.Rx.Bytes.IncrementBy(uint64(n))
 		}()
 		// flood packets out
 		sent := uint64(0)
 		for {
 			binary.BigEndian.PutUint64(b, sent) // only set the first byte to keep non-sending computation low
-			n, werr := conn.Write(b)
+			m, werr := conn.Write(b)
 			if err != nil {
 				log.Fatalf("%vnet.Write() error: %v", errSrc, werr)
 			}
 			stats.Tx.Packets.Increment()
-			stats.Tx.Bytes.IncrementBy(uint64(n))
+			stats.Tx.Bytes.IncrementBy(uint64(m))
 			sent++
 		}
 	}

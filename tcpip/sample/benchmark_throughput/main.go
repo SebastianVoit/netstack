@@ -62,7 +62,7 @@ var numTx = flag.Uint64("numTx", 1, "number of TX queues")
 var bSize = flag.Int("b", 256, "Batch Size for the driver")
 var tunDev = flag.String("tun", "", "Empty string uses the ixy link endpoint, non-empty string specifies the tun device to use instead. Ignores the pci address")
 var tap = flag.Bool("tap", false, "use tap istead of tun. Doesn't do anything for an ixy endpoint")
-var paylSize = flag.Int("ps", 1, "Payload size for the packets send by the client as a multiple of 8B. Max MSS, -1 -> MSS.")
+var paylSize = flag.Int("ps", 8, "Payload size for the packets send by the client in B. Capped to MMS and multiple of 8. Min 8, max MSS, <=0 -> MSS.")
 
 type dirStats struct {
 	packets uint64
@@ -95,7 +95,7 @@ func printStatsDiff(statsOld, stats *nicRTStats, nanos time.Duration) {
 		devString = fmt.Sprintf("ixy|%v", flag.Arg(2))
 	}
 	fmt.Printf("Stack.NIC stats:\n")
-	fmt.Printf("[%v] RX: %.2f Mbit/s (total) %.2f Mbit/s (payload) %.2f Mpps\n", devString, diffMbit(statsOld.rx, stats.rx, nanos), diffMbitPl(statsOld.tx, stats.tx, nanos), diffMpps(stats.rx.packets, statsOld.rx.packets, nanos))
+	fmt.Printf("[%v] RX: %.2f Mbit/s (total) %.2f Mbit/s (payload) %.2f Mpps\n", devString, diffMbit(statsOld.rx, stats.rx, nanos), diffMbitPl(statsOld.rx, stats.rx, nanos), diffMpps(stats.rx.packets, statsOld.rx.packets, nanos))
 	fmt.Printf("[%v] TX: %.2f Mbit/s (total) %.2f Mbit/s (payload) %.2f Mpps\n", devString, diffMbit(statsOld.tx, stats.tx, nanos), diffMbitPl(statsOld.tx, stats.tx, nanos), diffMpps(stats.tx.packets, statsOld.tx.packets, nanos))
 }
 
@@ -195,7 +195,7 @@ func writer(ch chan struct{}, ep tcpip.Endpoint, writeOpts tcpip.WriteOptions) {
 	for {
 		// one could implement randomized contents here but I don't see any benefits
 		// keep the packet size small -> one
-		pLen := *paylSize * 8
+		pLen := *paylSize
 		v := buffer.NewView(pLen)
 		binary.BigEndian.PutUint64(v, val) // only fill the first byte to minimize computation per packet
 		val++
@@ -447,6 +447,9 @@ func main() {
 	}
 	if *paylSize*8 > int(mss) || *paylSize <= 0 {
 		*paylSize = int((mss - mss%8) / 8)
+	}
+	if *paylSize < 8 {
+		*paylSize = 8
 	}
 
 	if err := s.AddAddress(nId, proto, addr); err != nil {
