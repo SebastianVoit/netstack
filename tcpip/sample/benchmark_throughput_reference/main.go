@@ -41,7 +41,7 @@ import (
 )
 
 // var verbose = flag.Bool("v", false, "the verbose flag enables additional feedback during program operation including packet sniffing")
-var paylSize = flag.Int("ps", 8, "Payload size for the packets send by the client in B. Capped to MMS and multiple of 8. Min 8, max MSS, <=0 -> MSS.")
+var paylSize = flag.Int("ps", 8, "Payload size for the packets send by the client in B. Min 8, max MSS, <=0 -> MSS.")
 var iFace = flag.String("iface", "", "The interface whose mtu should be used for capping mss.")
 
 type dirStats struct {
@@ -194,9 +194,7 @@ func main() {
 		mss -= 8
 	}
 	if *paylSize*8 > int(mss) || *paylSize <= 0 {
-		*paylSize = int((mss - mss%8) / 8) // paylSize has to be a multiple of 8
-	} else if *paylSize%8 != 0 {
-		*paylSize -= *paylSize % 8
+		*paylSize = int(mss - mss%4) // paylSize has to be a multiple of 8
 	}
 	if *paylSize < 8 {
 		*paylSize = 8

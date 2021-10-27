@@ -62,7 +62,7 @@ var numTx = flag.Uint64("numTx", 1, "number of TX queues")
 var bSize = flag.Int("b", 256, "Batch Size for the driver")
 var tunDev = flag.String("tun", "", "Empty string uses the ixy link endpoint, non-empty string specifies the tun device to use instead. Ignores the pci address")
 var tap = flag.Bool("tap", false, "use tap istead of tun. Doesn't do anything for an ixy endpoint")
-var paylSize = flag.Int("ps", 8, "Payload size for the packets send by the client in B. Capped to MMS and multiple of 8. Min 8, max MSS, <=0 -> MSS.")
+var paylSize = flag.Int("ps", 8, "Payload size for the packets send by the client in B. Min 8, max MSS, <=0 -> MSS.")
 
 type dirStats struct {
 	packets uint64
@@ -446,9 +446,7 @@ func main() {
 		mss -= 8
 	}
 	if *paylSize*8 > int(mss) || *paylSize <= 0 {
-		*paylSize = int((mss - mss%8) / 8)
-	} else if *paylSize%8 != 0 {
-		*paylSize -= *paylSize % 8
+		*paylSize = int(mss - mss%4)
 	}
 	if *paylSize < 8 {
 		*paylSize = 8
