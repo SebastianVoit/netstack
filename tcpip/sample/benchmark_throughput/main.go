@@ -83,8 +83,8 @@ func diffMbit(statsOld, stats *dirStats, nanos time.Duration) float64 {
 }
 
 func diffMbitPl(statsOld, stats *dirStats, nanos time.Duration) float64 {
-	// only take actually transported data into account
-	return float64(stats.bytes-statsOld.bytes) / 1000000.0 / (float64(nanos) / 1000000000.0) * 8
+	// Payload Mbit/s
+	return diffMpps(stats.packets, statsOld.packets, nanos) * float64(*paylSize) * 8
 }
 
 func printStatsDiff(statsOld, stats *nicRTStats, nanos time.Duration) {
